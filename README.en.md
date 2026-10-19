@@ -66,9 +66,9 @@ Put `.bas` files (BASIC as plain text) or `.hex` files (hex dumps, one `address 
 
 A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not exported. `uv run pc1251 --export folder` exports from the saved RAM.
 
-A `.bas` file is typed in at full speed after a `NEW` in PRO mode; a `.hex` file is written straight into RAM, and anything after `;` on a line is a comment. Only 79 characters fit on one input line, so a longer line is typed as on the real machine: up to a break point (a `:` where possible), then `ENTER`, then ▶ to the end of the line and the rest. A `.bas` and a `.hex` with the same name form one program: the dump is written first, then the BASIC is typed in.
+A `.bas` file is typed in at full speed after a `NEW` in PRO mode (write the exponent sign, typed with SHIFT+`+` and different from the letter E, as `[E]` or `€`, e.g. `1[E]-8`, as PocketTools does, and π as `π`); a `.hex` file is written straight into RAM, and anything after `;` on a line is a comment. Hex dumps written by the YASM61860 assembler (`c300 : 02 41 37 …`) can be used as `.hex` files as they are. Only 79 characters fit on one input line, so a longer line is typed as on the real machine: up to a break point (a `:` where possible), then `ENTER`, then ▶ to the end of the line and the rest. If appending would overflow the edit field (79 characters including the line number), the keywords are typed first and the rest is inserted afterwards with ▶ and SHIFT+▶ (INS), as one would on the real machine. A `.bas` and a `.hex` with the same name form one program: the dump is written first, then the BASIC is typed in.
 
-Lines starting with `#` are comments; `# title: name in the list`, `# run: what to type to run it`, `# hex: a dump file to load first` and `# after: a dump file to write after the run command is typed` are read as settings. `# after:` is for articles where the BASIC program reserves space with DIM before the machine code is loaded. A `.hex` that is only used through `# hex:` or `# after:` (with no `.bas` of the same name) is not listed on its own; its size is shown on the program that uses it. Files in a `pc1251/` or `pc1245/` folder inside a program folder are for that model; files directly in the program folder work on both. `# model: 1251` in the file does the same as the folder. A program for another model is listed with "(PC-1251用)" and is not loaded. If a program with the same `# title:` exists for the current model, only that one is listed, so a program written separately for each model can sit under the same name in both folders. `programs/` has eight samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
+Lines starting with `#` are comments; `# title: name in the list`, `# run: what to type to run it`, `# hex: a dump file to load first`, `# bin: a machine-code binary and its load address` (`# bin: code.bin &C300`) and `# after: a dump file to write after the run command is typed` are read as settings. A `.bin` file (the format PocketTools' `bin2wav` reads) holds only the machine-code bytes, not the address to load them at, so the `# bin:` line supplies the address, written as `&C300`, `0xC300` or `C300`. YASM61860's `-r` writes memory from address 0 (zero-filled up to the ORG), so for YASM61860 output use the dump (`-d`) as a `.hex` file instead; `# after: code.bin &C400` works too. `# after:` is for articles where the BASIC program reserves space with DIM before the machine code is loaded. A `.hex` that is only used through `# hex:` or `# after:` (with no `.bas` of the same name) is not listed on its own; its size is shown on the program that uses it. Files in a `pc1251/` or `pc1245/` folder inside a program folder are for that model; files directly in the program folder work on both. `# model: 1251` in the file does the same as the folder. A program for another model is listed with "(PC-1251用)" and is not loaded. If a program with the same `# title:` exists for the current model, only that one is listed, so a program written separately for each model can sit under the same name in both folders. `programs/` has eight samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
 
 ### Keys
 
@@ -87,11 +87,14 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+T, Shift+Cmd+T | Ctrl+T, Shift+Ctrl+T | faster / slower (½×, 1×, 2×, 4×, 8×; away from 1× the pitch of the sound changes too) |
 | Cmd+E | Ctrl+E | export the BASIC program in memory to a .bas file |
 | Cmd+S | Ctrl+S | save a screenshot |
+| Shift+Cmd+R | Shift+Ctrl+R | start recording / stop and save the video |
 | Cmd+/ | Ctrl+/ | key help |
 | Cmd+V | Ctrl+V | type the clipboard text in |
 | Cmd+K | Ctrl+K | make the arrow keys press 8, 2, 4, 6 on the keypad, or back |
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
+
+Shift+Cmd+R (Shift+Ctrl+R on Windows) starts recording; pressing it again stops and saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. The ffmpeg used to make the video comes with the imageio-ffmpeg library, which bundles it only for Windows, macOS and Linux (x86_64 and aarch64). Elsewhere the emulator still installs and runs, but recording needs an ffmpeg on the PATH; without one, the emulator says so at the bottom of the window instead of recording.
 
 Right-click opens a menu with the same actions. Its first item opens the program list, so you can pick a sample and run it straight away. Turn off Japanese input before typing.
 
@@ -116,7 +119,7 @@ Programs can be exchanged with a real machine as cassette audio (wav files).
 - **Emulator to real machine**: type `CSAVE` or `CSAVE M` in RUN mode. The sound the ROM sends to the cassette port is written to the program folder (`~/.pc1251/programs`) as `tape-<date>-<time>.wav`. Play the wav into the real machine's cassette interface and type `CLOAD`/`CLOAD M` on the real machine. `BEEP` sounds are not written.
 - **Real machine to emulator**: record the real machine's `CSAVE` as a wav, drop it onto the window (or start with `--tape file`) to insert it as a tape, then load it with `CLOAD`/`CLOAD M`.
 
-Saving and loading back within the emulator works; transfers to and from a real machine have not been tested yet.
+Loading real-machine tapes into the emulator has been checked with recordings of the PC-1251 sample-program micro-cassette (20 programs published in [number42net/sharp-pc1251](https://github.com/number42net/sharp-pc1251)): all of them load with `CLOAD` without errors. Machine-code wavs made with PocketTools' `bin2wav` or YASM61860's `-w` (with `-old`) load with `CLOAD M`. The wavs the emulator writes decode correctly with PocketTools' `wav2bin`, but they have not been played into a real machine yet.
 
 ## Running as a PC-1245
 
@@ -146,13 +149,13 @@ The key positions are the same as on the PC-1251. Apart from DEG, which is visib
 | `pc1251emu/sc61860.py` | CPU core. The 256 opcodes are dispatched through a table of functions |
 | `pc1251emu/machine.py` | memory, key matrix, timers, ports, LCD RAM, power |
 | `pc1251emu/display.py` | drawing the case and the LCD |
-| `pc1251emu/audio.py` | the piezo buzzer |
+| `pc1251emu/audio.py` | the piezo buzzer and its output (SDL audio queue) |
 | `pc1251emu/app.py` | window, keyboard and mouse, automatic typing |
 | `pc1251emu/programs.py` | the program folders and how .bas/.hex files are read |
 | `pc1251emu/tape.py` | writing and reading cassette audio (wav) |
 | `doc/manual.pdf` | the user guide (in Japanese) |
 
-Instruction semantics follow MAME's SC61860 implementation, except for `56h` (READ), `LOOP` and `WAIT n`, which sources describe differently and where I followed how real programs use them, and `CUP`/`CDN` and the timer flags (`TEST 01`/`TEST 02`), which follow what the ROM's cassette routines need. For `CUP`/`CDN` and the timer flags I also checked against PockEmul and digihori's [PokecomGO](https://github.com/digihori/pokecom). The clock is 192 kHz.
+Instruction semantics follow MAME's SC61860 implementation, except for `56h` (READ), `LOOP` and `WAIT n`, which sources describe differently and where I followed how real programs use them, and `CUP`/`CDN` and the timer flags (`TEST 01`/`TEST 02`), which follow what the ROM's cassette routines need. For `CUP`/`CDN` and the timer flags I also checked against PockEmul and digihori's [PokecomGO](https://github.com/digihori/pokecom). The undocumented opcode `72h` (LIIH), which MAME treats as a one-byte no-op, is a two-byte instruction here, following utz82's instruction table; the COR version of "Hashire! Sekoiline" (PiO, April 1986) relies on it. The clock is 192 kHz.
 
 The memory map is: internal ROM at `0000-1FFF`, BASIC ROM at `4000-7FFF`, RAM at `B800-C7FF` (`C000-C7FF` on the PC-1245) and LCD RAM at `F800-F87F`. The LCD RAM `F800-F8FF` also appears in every 256-byte block of `F900-FFFF`, and on the PC-1245 in `E800-EFFF` as well.
 
@@ -164,7 +167,7 @@ The left 60 columns of the LCD are `F800-F83B` in order, and the right 60 are `F
 
 ### Differences from the real machine
 
-- Cassette I/O round-trips within the emulator (`CSAVE` output loads back with `CLOAD`); transfers to and from a real machine have not been tested.
+- Cassette input has been checked with recordings of real tapes (they load with `CLOAD`). The wavs the emulator writes have not been played into a real machine yet.
 - The CE-125 printer is not emulated.
 - Different ROM versions have not been checked.
 - BASIC's `PEEK` can read the internal ROM here (the real CPU reads it only with the `DATA` instruction).
