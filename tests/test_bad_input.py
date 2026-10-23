@@ -152,7 +152,9 @@ def test_export_keeps_directives(tmp_path):
     app = make_app()
     app.open_program(prog)
     settle(app)
-    text = open(export_program(app.m, str(tmp_path / "out"), prog), encoding="utf-8").read()
+    path = export_program(app.m, str(tmp_path / "out"), prog)
+    assert path is not None
+    text = open(path, encoding="utf-8").read()
     for line in (
         "# model: 1251,1245",
         "# hex: code.hex",
@@ -245,7 +247,7 @@ def test_unreadable_dependency(tmp_path, monkeypatch):
     monkeypatch.setenv("PC1251_PROGRAMS", str(lib))
     app = make_app()
     app.open_menu()
-    assert any(p.name == "uses" for p in app.menu.items)
+    assert app.menu is not None and any(p.name == "uses" for p in app.menu.items)
     app.menu = None
     app.open_program(prog)
     assert "読み込みません" in app.status and not app.typer.busy

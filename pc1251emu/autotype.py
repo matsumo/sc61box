@@ -1,5 +1,7 @@
 """キー操作を順に打つ(ファイルや貼り付けの打ち込み、パソコンのキーボード)"""
 
+from collections.abc import Callable
+
 from .keytype import keys_for, keys_for_program
 from .machine import CLOCK, PC1251
 
@@ -43,7 +45,7 @@ class Typer:
         self.on_mode = on_mode  # スイッチを動かす手続き
         self.queue: list[list[str]] = []
         self.writes: dict[str, list[tuple[int, bytes]]] = {}
-        self.calls: dict[str, object] = {}
+        self.calls: dict[str, Callable[[], object]] = {}
         self.cur: list[str] | None = None
         self.until = 0
         self.phase = 0  # 0: 押している、1: 離して待っている、2: 離されるまで押している

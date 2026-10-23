@@ -18,6 +18,7 @@ def _printed(model, src, command="RUN"):
         m.run(CLOCK)
     typ(m, t, src, mode="PRO")
     typ(m, t, command + "\n", wait=3, mode="PRO" if command == "LLIST" else "RUN")
+    assert m.printer is not None
     return m.printer.text()
 
 
@@ -103,6 +104,7 @@ def test_printout_saved_automatically(tmp_path, monkeypatch):
     first = app.print_file
     assert first and first.startswith(str(tmp_path)) and app.paper.where_rect.width > 0
     assert open(first, "rb").read(4) == b"\x89PNG"  # 新しい紙はすぐに保存する
+    assert app.m.printer is not None
     app.m.printer.put(ord("X"))  # 印字を足し、1秒より前に印字したことにする
     app.m.printer.put(0x0D)
     app.frame()

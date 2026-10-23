@@ -30,6 +30,7 @@ def test_bar_buttons():
         app.popup = None
     _click(app, app.bar.rects[labels.index("プログラム")].center)
     app.frame()
+    assert app.popup is not None
     first = app.popup.rows[0][1]
     _click(app, first.center)  # 「プログラムの一覧…」
     assert app.menu is not None
@@ -41,6 +42,7 @@ def test_bar_buttons():
     assert not any("録画" in t for t in every)
     _click(app, app.bar.rects[labels.index("表示・入力")].center)
     app.frame()
+    assert app.popup is not None
     _click(app, app.popup.rows[0][1].center)  # 「キーの説明」
     assert app.help
     assert app.m.model.title in app.bar_info()
@@ -51,10 +53,11 @@ def test_search_in_list():
     """一覧で「/」を打ってから名前の一部を打つと、合うものだけになる。Escで元に戻る"""
     app = make_app()
     app.open_menu()
+    assert app.menu is not None
     every = len(app.menu.items)
     app.handle(ev(pygame.TEXTINPUT, text="/"))
     app.handle(ev(pygame.TEXTINPUT, text="素数"))
-    assert [p.name for p in app.menu.items] == ["primes"]
+    assert app.menu is not None and [p.name for p in app.menu.items] == ["primes"]
     app.handle(ev(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=0))
     assert app.menu is not None and len(app.menu.items) == every
     app.handle(ev(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=0))
@@ -378,6 +381,7 @@ def test_rush_does_not_stretch_recording(tmp_path, monkeypatch):
     for _ in range(10):
         app.frame()
         frames += 1
+    assert app.recorder is not None
     seconds = app.recorder.seconds
     app.toggle_recording()
     assert abs(seconds - frames / 30) < 0.15, (seconds, frames)
@@ -392,7 +396,7 @@ def test_switch_menus_with_one_click():
     labels = [b.label for b in app.bar.buttons]
     rect = {name: app.bar.rects[labels.index(name)] for name in labels}
     _click(app, rect["プログラム"].center)
-    assert app.popup.kind == "program"
+    assert app.popup is not None and app.popup.kind == "program"
     _click(app, rect["本体"].center)
     assert app.popup is not None and app.popup.kind == "machine"
     _click(app, rect["本体"].center)

@@ -24,11 +24,12 @@ HAVE_ROM_1245 = _have("1245")
 HAVE_ROM_1260 = _have("1260")
 HAVE_ROM_1350 = _have("1350")
 
+# ROMがなくても動く試験(「モジュール::名前」。同じ名前でもROMの要る試験がほかのモジュールにある)
 NO_ROM_NEEDED = {
-    "test_switch_knob_matches_label",
-    "test_version",
-    "test_lcd_ram_mirrors",
-    "test_sound_queue_keeps_up",
+    "test_smoke::test_switch_knob_matches_label",
+    "test_smoke::test_version",
+    "test_smoke::test_lcd_ram_mirrors",
+    "test_smoke::test_sound_queue_keeps_up",
 }
 
 
@@ -36,7 +37,10 @@ def pytest_collection_modifyitems(config, items):
     from test_basic import DUMP
 
     for item in items:
-        if item.module.__name__ == "test_cpu" or item.name in NO_ROM_NEEDED:
+        if (
+            item.module.__name__ == "test_cpu"
+            or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
+        ):
             continue
         if item.module.__name__ == "test_pc1261":
             if not HAVE_ROM_1260:

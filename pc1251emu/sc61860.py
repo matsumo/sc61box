@@ -129,7 +129,7 @@ class SC61860:
         """stateの値を確かめて、set_stateに渡せる形にして返す。おかしければValueError"""
         if not isinstance(state, dict):
             raise ValueError("CPUの状態がありません")
-        out = {}
+        out: dict[str, int | bytes] = {}
         for name in self.REGISTERS:
             v = state.get(name)
             if type(v) is not int or v < 0:

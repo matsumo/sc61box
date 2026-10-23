@@ -16,6 +16,7 @@ import sys
 import time
 import wave
 from types import SimpleNamespace
+from typing import Any
 
 import pygame
 import typer
@@ -827,7 +828,8 @@ class App:
             return
         long = keytype.too_long(prog.basic, m.model.name) if prog.basic else None
         if long is not None:
-            num = re.match(r"\s*(\d*)", long)[1]
+            hit = re.match(r"\s*(\d+)", long)
+            num = hit[1] if hit else ""
             where = f"{num}行" if num else f"「{long.strip()[:16]}」の行"
             self.say(
                 f"{prog.title or prog.name}を読み込みません。{where}が長すぎて、打ち込むと"
@@ -1163,7 +1165,8 @@ class App:
             if all(isinstance(v, str) for v in text.values()) and all(
                 isinstance(v, list) and all(isinstance(x, str) for x in v) for v in lists.values()
             ):
-                prog = programs.Program(**text, **lists)
+                fields: dict[str, Any] = {**text, **lists}
+                prog = programs.Program(**fields)
         loading, load_help = info.get("loading"), info.get("help")
         self.last_prog = prog
         self.loading = loading if isinstance(loading, str) else ""
@@ -1318,16 +1321,16 @@ class App:
                 self.say(self.load_help, 20)
             else:
                 self.say(f"{self.loading}を読み込みました")
-        sounding = self.speaker is not None and bool(speed) and not typing
-        adjust = speed_adjust(self.speaker.level()) if sounding else 1
+        speaker = self.speaker if bool(speed) and not typing else None  # 鳴らすときだけ
+        adjust = speed_adjust(speaker.level()) if speaker is not None else 1
         self._advance(int(speed * (CLOCK // FPS) * adjust))
         wav = self.tape_out.feed(m.sound_events, m.cpu.cycles, m.pc_out >> 4)
         if wav is not None:
             self.save_tape(wav)
-        if sounding:
-            keep = self.speaker.keep_silent
+        if speaker is not None:
+            keep = speaker.keep_silent
             pcm = self._render(self.buzzer, c0, keep_silent=keep)
-            self.speaker.push(pcm)
+            speaker.push(pcm)
         elif self.speaker is not None:
             self.buzzer.hold(m.pc_out >> 4)
             self.speaker.clear()

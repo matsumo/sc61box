@@ -614,8 +614,8 @@ class PC1251(Bus):
     # ---- 状態の保存(どこでもセーブ) ----
     # RAMと液晶RAM、CPUのレジスタ、ポート、タイマ、スイッチを1つのJSONに書く
     STATE_FORMAT = 1
-    STATE_FIELDS = ("mode", "pa", "pb", "pc_out", "pf", "power", "halted")
-    STATE_FIELDS += ("t2", "t2ms", "t512", "t512cnt")
+    STATE_FIELDS: tuple[str, ...] = ("mode", "pa", "pb", "pc_out", "pf", "power", "halted",
+                                     "t2", "t2ms", "t512", "t512cnt")  # fmt: skip
 
     def _state_key(self) -> dict:
         """読み込む本体と合っているかを見る項目"""
@@ -968,7 +968,7 @@ class PC1350(PC1251):
         self.mode = "ON"
         self.wake()
 
-    STATE_FIELDS = PC1251.STATE_FIELDS + ("ko",)
+    STATE_FIELDS: tuple[str, ...] = PC1251.STATE_FIELDS + ("ko",)
 
     def _state_key(self) -> dict:
         return {**super()._state_key(), "overseas": self.overseas}
