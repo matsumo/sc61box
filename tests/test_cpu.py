@@ -96,12 +96,22 @@ def test_anid_uses_r_minus_1():
 
 
 def test_liih_is_two_bytes():
-    # LII 55 / LIIH 00 / LIIH 00 / LIB 25。LIIHはI=H、H=nの2バイト命令(utz82の表)。
-    # 2つ続けるとIが0になる(「走れ!セコイライン」COR版のC2B1)
+    # LII 55 / LIIH 00 / LIIH 00 / LIB 25。LIIHはI=H、H=nの2バイト命令で、
+    # 2つ続けるとIが0になる
     cpu, _ = run(bytes([0x00, 0x55, 0x72, 0x00, 0x72, 0x00, 0x03, 0x25]), 4)
     assert cpu.ram[0] == 0  # I
     assert cpu.ram[B] == 0x25
     assert cpu.pc == 8
+
+
+def test_readm_is_one_byte():
+    # LP 0F / READM / LII FF。READMは次のバイト(00)を(P)に読み、そのバイトは
+    # 命令(LII FF)として残す
+    cpu, _ = run(bytes([0x8F, 0x54, 0x00, 0xFF, 0x03, 0x25]), 4)
+    assert cpu.ram[0x0F] == 0x00
+    assert cpu.ram[0] == 0xFF  # I
+    assert cpu.ram[B] == 0x25
+    assert cpu.pc == 6
 
 
 if __name__ == "__main__":

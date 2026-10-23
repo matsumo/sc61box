@@ -1,37 +1,32 @@
-"""SHARP SC61860(ESR-H)の命令を1つずつ実行するCPUコア
+"""SHARP SC61860(ESR-H)のCPUコア
 
-命令の意味はMAMEの実装(src/devices/cpu/sc61860)を下敷きにし、
-次の点は、MAMEと違う扱いにした。READ、LOOP、WAITは実機のプログラムの書き方から
-決めた(『PC-インタープリタを読む』1.4節)。CUP・CDNはROMのカセットの読み書きに合わせた。
+命令の意味とサイクル数はMAMEの実装(src/devices/cpu/sc61860)にならい、次の命令だけ変えた。
 
-* 56h(READ): 1バイト命令。次の番地の1バイトをAに読み、そのバイトは
-  命令として残す。MAMEは2バイト命令として(P)に即値を入れる。
-* LOOP: (R)を1減らし、桁借りがなければ後ろへ飛ぶ。抜けるときに
-  スタックの一番上(回数)を1つ捨てる。MAMEは飛ぶたびに捨てる。
-* WAIT n: 6+nサイクル(utz82の表、POPCOMの講座)。MAMEは9+2n。
-* CUP・CDN: 待つあいだPを1つずつ増やす(PC-1350の機械語マニュアル、utz82の表)。
-  終わったあと、Xinが0ならZを立てる。MAMEは(P)を増やし、ZにXinをそのまま入れる。
-  PockEmulとPokecomGO(digihori/pokecom)の実装とも見比べた。
-* IYS・DYS、PTC、DTCのサイクル数: IYS・DYSは6、PTCは8、DTCは5+7d(dはPTCで
-  決めた件数)。PC-1350の機械語マニュアルの値。MAMEはそれぞれ7、9、3。
-* ANID・ORID・TSID: (R-1)を一時的な置き場に使う(同じマニュアル)。書く値は
-  書き換える前の(DP)にした(utz82の表)。MAMEは書かない。
-* 72h・73h・76h・77h(LIIH n、資料にない命令): 2バイト命令で、I=H、H=n、Zを0にする
-  (utz82の表)。Hレジスタはほかの命令でも書き換わるとされるが、ここではLIIHが
-  書いた値だけを覚える。MAMEは1バイトで何もしない。PiO 1986年4月号の
-  「走れ!セコイライン」COR版が「72 00 72 00」をI=0の意味で使っている。
+* 56h(READ)・54h(READM): 1バイト命令。次の番地のバイトをAか(P)に読み、そのバイトは
+  命令として残す(MAMEは2バイト命令)。LC-3コンパイラは、READMの次のバイトを命令として
+  実行させている。
+* LOOP: 抜けるときだけスタックの回数を捨てる(MAMEは飛ぶたびに捨てる)。
+* WAIT n: 6+nサイクル(utz82の表、POPCOMの講座。MAMEは9+2n)。
+* CUP・CDN: 待つあいだPを1つずつ増やし、終わったときXinが0ならZを立てる(PC-1350の
+  機械語マニュアル、utz82の表。MAMEは(P)を増やし、ZにXinを入れる)。
+* IYS・DYSは6サイクル、PTCは8、DTCは5+7d(PC-1350の機械語マニュアル)。
+* ANID・ORID・TSID: 書き換える前の(DP)を(R-1)に置く(同じマニュアルとutz82の表)。
+* 72h・73h・76h・77h(LIIH n、資料にない命令): 2バイト命令で、I=H、H=n、Z=0(utz82の表)。
+  「走れ!セコイライン」COR版が「72 00」をI=0の意味で使っている。MAMEは何もしない。
 
-それ以外のサイクル数はMAMEの値を使う。
+READ・LOOP・WAITの根拠は『PC-インタープリタを読む』1.4節、CUP・CDNはROMのカセットの
+読み書きに合わせ、PockEmulとPokecomGOの実装とも比べた。
 """
 
 A, B, I, J = 2, 3, 0, 1
+CUP_STEP = 4  # CUP・CDNでPを1つ進めるのにかかるサイクル
 XL, XH, YL, YH = 4, 5, 6, 7
 K, L, M, N = 8, 9, 10, 11
 IA, IB, FO, CP = 0x5C, 0x5D, 0x5E, 0x5F  # 入出力バッファ
 
 
 class Bus:
-    """メモリと入出力。PC1251クラスがこれを実装する。"""
+    """メモリと入出力(machine.PC1251が実装する)"""
 
     def read(self, a: int) -> int:
         raise NotImplementedError
@@ -58,7 +53,7 @@ class Bus:
         pass
 
     def test_bits(self) -> int:
-        """TEST命令で見える信号。bit0 512ms, bit1 2ms, bit3 BRK, bit6 RESET, bit7 Xin"""
+        """TEST命令で見える信号(ビット0が512ms、1が2ms、3がBRK、6がRESET、7がXin)"""
         return 0
 
     def test(self, n: int) -> int:
@@ -99,9 +94,13 @@ def _bcd_sub(dst: int, src: int, borrow: int) -> tuple[int, int]:
 
 
 class SC61860:
-    def __init__(self, bus: Bus):
+    def __init__(self, bus: Bus, ratio: tuple[int, int] = (1, 1)):
         self.bus = bus
         self.ram = bytearray(0x80)  # 内部RAM(96バイト+Pが指せる残り)
+        # cyclesは周辺(タイマ、音、カセット)と共通の時刻で、1秒が192000。水晶の速い機種
+        # (PC-1261などは768kHz)では、命令のサイクル数をratio(分子, 分母)倍して足す
+        self.ratio = ratio
+        self._frac = 0
         self.reset()
         self._ops = [self._build(op) for op in range(256)]
 
@@ -113,6 +112,48 @@ class SC61860:
         self.h = 0  # PTCで積む件数
         self.hreg = 0  # LIIHが読み書きするHレジスタ
         self.cycles = 0
+
+    REGISTERS = ("pc", "dp", "p", "q", "r", "c", "z", "h", "hreg", "cycles", "_frac")
+
+    def state(self) -> dict:
+        """レジスタと内部RAM(状態の保存用)"""
+        out = {name: getattr(self, name) for name in self.REGISTERS}
+        out["ram"] = self.ram.hex()
+        return out
+
+    # 状態のファイルから読む値の上限(cyclesは上限なし)
+    _LIMITS = {"pc": 0xFFFF, "dp": 0xFFFF, "p": 0x7F, "q": 0x7F, "r": 0x7F, "c": 1, "z": 1}
+    _LIMITS |= {"h": 0xFF, "hreg": 0xFF}
+
+    def check_state(self, state: object) -> dict:
+        """stateの値を確かめて、set_stateに渡せる形にして返す。おかしければValueError"""
+        if not isinstance(state, dict):
+            raise ValueError("CPUの状態がありません")
+        out = {}
+        for name in self.REGISTERS:
+            v = state.get(name)
+            if type(v) is not int or v < 0:
+                raise ValueError(f"CPUの{name}がおかしい値です")
+            if name == "_frac":
+                if v >= self.ratio[1]:
+                    raise ValueError("CPUの_fracがおかしい値です")
+            elif v > self._LIMITS.get(name, v):
+                raise ValueError(f"CPUの{name}がおかしい値です")
+            out[name] = v
+        try:
+            ram = bytes.fromhex(state.get("ram", ""))
+        except (TypeError, ValueError):
+            ram = b""
+        if len(ram) != len(self.ram):
+            raise ValueError("CPUの内部RAMの大きさが違います")
+        out["ram"] = ram
+        return out
+
+    def set_state(self, state: dict) -> None:
+        """check_stateで確かめた値に戻す"""
+        for name in self.REGISTERS:
+            setattr(self, name, state[name])
+        self.ram[:] = state["ram"]
 
     # ---- 補助 ----
     def _fetch(self) -> int:
@@ -134,22 +175,36 @@ class SC61860:
         return v
 
     def step(self) -> int:
-        """1命令を実行して、かかったサイクル数を返す"""
+        """1命令を実行して、進んだ時刻(サイクル)を返す"""
         op = self._fetch()
-        n = self._ops[op]()
+        n = self._ticks(self._ops[op]())
         self.cycles += n
         return n
 
+    def _ticks(self, n: int) -> int:
+        """CPUのサイクル数を時刻の単位に直す"""
+        num, den = self.ratio
+        if num == den:
+            return n
+        self._frac += n * num
+        q = self._frac // den
+        self._frac -= q * den
+        return q
+
     def run(self, cycles: int) -> int:
-        """指定サイクルぶん実行する。実際に使ったサイクル数を返す。"""
-        # cyclesは命令ごとに進める。ポートへの書き込み(ブザーの音など)の時刻を
-        # 周辺側がcyclesで読むので、まとめて足すと同じ時刻に潰れてしまう
+        """cyclesぶん実行し、実際に進んだサイクル数を返す。ポートへの書き込みの時刻を
+        周辺がcyclesで読むので、cyclesは命令ごとに進める"""
         ops = self._ops
         fetch = self._fetch
         start = self.cycles
         end = start + cycles
-        while self.cycles < end:
-            self.cycles += ops[fetch()]()
+        if self.ratio[0] == self.ratio[1]:
+            while self.cycles < end:
+                self.cycles += ops[fetch()]()
+        else:
+            ticks = self._ticks
+            while self.cycles < end:
+                self.cycles += ticks(ops[fetch()]())
         return self.cycles - start
 
     # ---- 命令表 ----
@@ -710,17 +765,18 @@ class SC61860:
             level = 1 if op == 0x6F else 0
 
             def f():
-                # 待つあいだPを1つずつ進める。ROMはあとでLDPで待った長さを読む
+                # ROMは待った長さをあとでLDPで読む
                 n = ram[I]
+                num, den = s.ratio
                 cyc = 1
-                x = bus.xin(s.cycles + cyc)
+                x = bus.xin(s.cycles + cyc * num // den)
                 for _ in range(n + 1):
                     s.p = (s.p + 1) & 0x7F
-                    cyc += 4
-                    x = bus.xin(s.cycles + cyc)  # 1回ごとに4サイクル進んだ時刻で見る
+                    cyc += CUP_STEP
+                    x = bus.xin(s.cycles + cyc * num // den)
                     if x != level:
                         break
-                s.z = int(x == 0)  # ZはXinが0のとき。待ちきれずに終わったかをROMがJPZで見る
+                s.z = int(x == 0)  # 待ちきれずに終わったかをROMがJPZで見る
                 return cyc
 
             return f
@@ -752,10 +808,10 @@ class SC61860:
                 return 3
 
             return f
-        if op == 0x54:  # READM (P)←即値
+        if op == 0x54:  # READM (P)←(PC+1)。PCは進めない
 
             def f():
-                ram[s.p] = s._fetch()
+                ram[s.p] = rd(s.pc)
                 return 3
 
             return f
@@ -766,7 +822,7 @@ class SC61860:
                 return 3
 
             return f
-        if op == 0x56:  # READ: A←(PC+1)。そのバイトは消費しない
+        if op == 0x56:  # READ A←(PC+1)。PCは進めない
 
             def f():
                 ram[A] = rd(s.pc)
@@ -1016,5 +1072,5 @@ class SC61860:
                 return 2
 
             return f
-        # 資料に動作の記述がない命令は何もしない
+        # 動作のわからない命令は何もしない
         return lambda: 2

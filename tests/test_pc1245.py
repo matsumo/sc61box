@@ -1,34 +1,20 @@
 """PC-1245として動かす(rom/cpu-1245.romとrom/bas-1245.romが必要)"""
 
 import os
-import sys
-import types
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from helpers import boot as _boot
+from helpers import finish, make_app, settle, typ
 
-from pc1251emu import basictext  # noqa: E402
-from pc1251emu.app import App, Typer, export_program, parse_hexdump  # noqa: E402
-from pc1251emu.lcdtext import lcd_text  # noqa: E402
-from pc1251emu.machine import CLOCK, PC1251  # noqa: E402
+from pc1251emu import basictext
+from pc1251emu.app import export_program, parse_hexdump
+from pc1251emu.lcdtext import lcd_text
+from pc1251emu.machine import CLOCK
 
 DUMP = os.path.join(os.path.dirname(__file__), "..", "programs", "pcint.hex")
 
 
 def boot():
-    m = PC1251(model="1245")
-    m.run(CLOCK)
-    return m, Typer(m)
-
-
-def typ(m, t, text, wait=0.5):
-    t.add_text(text)
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
-    m.run(int(CLOCK * wait))
-    return lcd_text(m)
+    return _boot("1245")
 
 
 def value(text):
@@ -40,9 +26,7 @@ def enter(m, t, program):
     m.mode = "PRO"
     m.run(CLOCK // 5)
     t.add_program(program)
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
+    finish(m, t)
     m.run(CLOCK // 2)
 
 
@@ -50,8 +34,7 @@ def test_prompt_and_memory():
     m, t = boot()
     assert m.display_on()
     assert len(lcd_text(m)) == 16  # 液晶は16桁
-    # 液晶にはモードの表示がない(DEGだけ点く)
-    assert m.symbols() == {"DE", "G"}
+    assert m.symbols() == {"DE", "G"}  # モードの記号はない
     assert value(typ(m, t, "MEM\n")) == "1486"
 
 
@@ -62,7 +45,7 @@ def test_parentheses_are_on_1_and_2():
 
 
 def test_shift_letter_gives_keyword():
-    """A〜=の段、Z〜SPCの段はSHIFTで命令になる(キーの上の刷り)"""
+    """A〜=の段とZ〜SPCの段は、SHIFTのあとで命令になる"""
     m, t = boot()
     m.mode = "PRO"
     m.run(CLOCK // 5)
@@ -100,7 +83,7 @@ def test_long_line():
 
 
 def test_full_line_by_inserting():
-    """上限ちょうど(行番号の桁と中間コードで79字)の行も、命令を先に打ってから挿入して入れられる"""
+    """上限ちょうど(79字)の行も、命令を先に打ってから挿入して入れられる"""
     line = (
         '310 "C":LPRINT "":FOR K=0 TO M-11:FOR J=0 TO N-11:D(K,J)=0:FOR I=0 TO L-1:'
         "D(K,J)=D(K,J)+B(K,I)*C(I,J):NEXT I"
@@ -163,10 +146,7 @@ def test_breakout_versions():
         assert found is not None and found.model == model
     old = next(p for p in items if p.name == "break" and p.model == "1251")
     assert old.label("1245").endswith("(PC-1251用)")
-    args = types.SimpleNamespace(
-        scale=1.0, type=None, load=None, fresh=True, mute=True, persist=1.0, model="1245"
-    )
-    app = App(args)
+    app = make_app("1245", frames=0)
     app.open_program(old, run=True)  # PC-1251用はPC-1245では読み込まない
     assert not app.typer.busy and "PC-1251用" in app.status
     app.close()
@@ -182,12 +162,7 @@ def test_breakout_on_pc1245():
 def test_app_starts_as_pc1245():
     import pygame
 
-    args = types.SimpleNamespace(
-        scale=1.0, type=None, load=None, fresh=True, mute=True, persist=1.0, model="1245"
-    )
-    app = App(args)
-    for _ in range(40):
-        app.frame()
+    app = make_app("1245")
     assert pygame.display.get_caption()[0] == "SHARP PC-1245"
     assert [m for m, _y in app.sw_stops] == ["PRO", "RUN", "OFF"]
     app.move_switch(-1)
@@ -200,11 +175,17 @@ def test_app_starts_as_pc1245():
     for _ in range(20):
         app.frame()
     app.typer.add_text("6*7\n")
-    for _ in range(200):
-        app.frame()
-        if not app.typer.busy:
-            break
-    for _ in range(10):
-        app.frame()
+    settle(app, 200)
     assert value(lcd_text(app.m)) == "42"
     app.close()
+
+
+def test_store_basic_matches_typing():
+    """中間コードを直に置くと、打ち込んだときと同じになる(PC-1245)"""
+    from helpers import typed_and_stored
+
+    src = '10 FOR I=1 TO 3:PRINT I;"A B":NEXT I\n20 REM  X\n5 WAIT 0\n'
+    typed, stored = typed_and_stored("1245", src)
+    end = typed.mem[0xC6E3] | typed.mem[0xC6E4] << 8  # 終わりのFFの番地
+    assert stored.mem[0xC6E3:0xC6E5] == typed.mem[0xC6E3:0xC6E5]
+    assert bytes(stored.mem[0xC000 : end + 1]) == bytes(typed.mem[0xC000 : end + 1])

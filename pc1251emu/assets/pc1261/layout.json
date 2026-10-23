@@ -1,0 +1,13 @@
+{
+ "cells": 24,
+ "lines": 2,
+ "mat": [235, 124],
+ "dot": [5, 5],
+ "pitch": [6, 6],
+ "cell_pitch": 38.6,
+ "line_pitch": 49,
+ "ann": [222, 14],
+ "switch_xy": [1311, 77],
+ "switch_area": [1276, 51, 1374, 221],
+ "switch_stops": [["RSV", 96], ["PRO", 122], ["RUN", 149], ["OFF", 177]]
+}

@@ -21,6 +21,8 @@ def _have(model: str) -> bool:
 
 HAVE_ROM = _have("1251")
 HAVE_ROM_1245 = _have("1245")
+HAVE_ROM_1260 = _have("1260")
+HAVE_ROM_1350 = _have("1350")
 
 NO_ROM_NEEDED = {
     "test_switch_knob_matches_label",
@@ -35,6 +37,16 @@ def pytest_collection_modifyitems(config, items):
 
     for item in items:
         if item.module.__name__ == "test_cpu" or item.name in NO_ROM_NEEDED:
+            continue
+        if item.module.__name__ == "test_pc1261":
+            if not HAVE_ROM_1260:
+                item.add_marker(
+                    pytest.mark.skip(reason="PC-1260/1261/1262のROMがない(rom/cpu-1260.romなど)")
+                )
+            continue
+        if item.module.__name__ == "test_pc1350":
+            if not HAVE_ROM_1350:
+                item.add_marker(pytest.mark.skip(reason="PC-1350のROMがない(rom/cpu-1350.romなど)"))
             continue
         if item.module.__name__ == "test_pc1245":
             if not HAVE_ROM_1245:

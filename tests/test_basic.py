@@ -1,38 +1,21 @@
-"""ROMで電卓・BASIC・PC-インタープリタを動かす
+"""PC-1251のROMで電卓、BASIC、PC-インタープリタを動かす
 
-ROM(rom/cpu-1251.rom, rom/bas-1251.rom)が必要。PC-インタープリタの試験には
-programs/pcint.hexを使う(環境変数PC1251_PCINT_DUMPで別のファイルにできる)。
+PC-インタープリタはprograms/pcint.hexを使う(環境変数PC1251_PCINT_DUMPで別のファイルにできる)。
 """
 
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from helpers import boot, finish, typ
 
-from pc1251emu.app import Typer, parse_hexdump  # noqa: E402
-from pc1251emu.audio import Buzzer  # noqa: E402
-from pc1251emu.lcdtext import lcd_text  # noqa: E402
-from pc1251emu.machine import CLOCK, PC1251  # noqa: E402
+from pc1251emu.app import Typer, parse_hexdump
+from pc1251emu.audio import Buzzer
+from pc1251emu.lcdtext import lcd_text
+from pc1251emu.machine import CLOCK, PC1251
 
 DUMP = os.environ.get(
     "PC1251_PCINT_DUMP",
     os.path.join(os.path.dirname(__file__), "..", "programs", "pcint.hex"),
 )
-
-
-def boot():
-    m = PC1251()
-    m.run(CLOCK)
-    return m, Typer(m)
-
-
-def typ(m, t, text, wait=0.5):
-    t.add_text(text)
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
-    m.run(int(CLOCK * wait))
-    return lcd_text(m)
 
 
 def test_prompt():
@@ -76,24 +59,21 @@ def test_long_line():
     m.run(CLOCK // 5)
     typ(m, t, "10 PRINT 1\n")
     t.add_program(line + "\n30 END\n")
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
+    finish(m, t)
     m.run(CLOCK // 2)
     lines = program_text(m.mem).splitlines()
     assert lines[1].replace(" ", "") == line.replace(" ", "")
     assert lines[2] == "30 END"
 
 
-FULL = (  # 行番号の桁と中間コードでちょうど79字。後ろに足すだけでは、最後のNEXTを打つ時点であふれる
+FULL = (  # 行番号と中間コードでちょうど79字。後ろに足すだけでは最後のNEXTであふれる
     '310 "C":LPRINT "":FOR K=0 TO M-11:FOR J=0 TO N-11:D(K,J)=0:FOR I=0 TO L-1:'
     "D(K,J)=D(K,J)+B(K,I)*C(I,J):NEXT I"
 )
 
 
 def test_full_line_by_inserting():
-    """上限ちょうどの長い行は、命令を先に打ってから残りを途中に挿入して入れる
-    (実機のテープの見本にある行の数字を2字増やしたもの)"""
+    """上限ちょうどの長い行は、命令を先に打ってから残りを途中に挿入して入れる"""
     from pc1251emu.basictext import program_lines, program_text
     from pc1251emu.keytype import insert_plan
 
@@ -102,9 +82,7 @@ def test_full_line_by_inserting():
     m.mode = "PRO"
     m.run(CLOCK // 5)
     t.add_program(FULL + "\n320 END\n")
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
+    finish(m, t)
     m.run(CLOCK // 2)
     lines = dict(program_lines(m.mem))
     assert len("310") + len(lines[310]) == 79
@@ -114,11 +92,11 @@ def test_full_line_by_inserting():
 
 
 def test_exponent_sign():
-    """指数のE(Expキー、4Bh)は「[E]」か「€」で書いて打ち込め、書き出すと「[E]」に戻る。
-    英字のE(55h)とは別の字で、RUNすると指数として計算される"""
+    """指数のE(4Bh)は「[E]」か数のあとの小文字の「e」で書いて打ち込め、書き出すと「[E]」に戻る。
+    英字のE(55h)とは別の字で、指数として計算される"""
     from pc1251emu.basictext import program_lines, program_text
 
-    m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5€2\n40 PRINT A*1[E]8+B+C\n")
+    m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5e2\n40 PRINT A*1[E]8+B+C\n")
     lines = dict(program_lines(m.mem))
     assert lines[10] == bytes([0x51, 0x34, 0x41, 0x4B, 0x36, 0x48])
     assert lines[20] == bytes([0x52, 0x34, 0x4B, 0x43])
@@ -129,8 +107,8 @@ def test_exponent_sign():
 
 
 def test_pi_and_words_in_strings():
-    """π(SHIFT+0、19h)は書き出して打ち直せる。文字列の中に中間コードがあれば、
-    実機のLISTと同じく綴りを空白で挟んで出す(実機のテープの見本にある)"""
+    """π(19h)は書き出して打ち直せる。文字列の中の中間コードは、LISTと同じく綴りを
+    空白で挟んで出す"""
     from pc1251emu.basictext import keyword_table, line_text, program_lines, program_text
 
     m, _ = _enter_program("10 A=π*2\n")
@@ -153,9 +131,7 @@ def test_after_dump_written_after_run():
     prog = Program(name="x", run="RUN", after=[(0xC530, bytes([0x12, 0x34]))])
     t.add_text(prog.run_command + "\n")
     t.add_write(prog.after)
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
+    finish(m, t)
     m.run(CLOCK // 2)
     assert (m.mem[0xC530], m.mem[0xC531]) == (0x12, 0x34)
 
@@ -183,8 +159,7 @@ def test_program_survives_restart(tmp="/tmp/pc1251_test_ram.bin"):
 
 
 def test_auto_power_off_about_11_minutes():
-    """何もしないと約11分で電源が切れ、プログラムは残る(Cポートのビット2で止まって
-    512msのタイマごとに起きる回数を数えている)"""
+    """何もしないと約11分で電源が切れ、プログラムは残る"""
     m, t = _enter_program("10 PRINT 123\n")
     m.mode = "RUN"
     seconds = 0
@@ -201,7 +176,7 @@ def test_auto_power_off_about_11_minutes():
 
 
 def test_direct_print_is_error_1():
-    # ROM(56BA)は手動計算の状態でPRINTを受け付けず、ERROR 1にする
+    """手動計算の状態のPRINTはERROR 1になる"""
     m, t = boot()
     assert typ(m, t, "PRINT 3\n").strip() == "ERROR 1"
 
@@ -237,15 +212,64 @@ def test_pc_interpreter():
     # BEEPは5と4を交互に書いて振動板を動かす
     ev = [e for e in m.sound_events if e[1] in (4, 5)]
     assert {4, 5} <= {e[1] for e in ev}
-    # 書き込みの時刻は命令ごとのサイクルで記録される(2msのまとまりに潰れない)。
-    # BEEP 09の1周期は128サイクル(192kHzで1.5kHz)
+    # 書き込みの時刻は命令ごとのサイクルで記録される。BEEP 09の1周期は128サイクル
     gaps = [ev[i + 1][0] - ev[i][0] for i in range(len(ev) - 1)]
     assert min(gaps) > 0
     assert gaps[0] + gaps[1] == 128
 
 
-if __name__ == "__main__":
-    for name, fn in list(globals().items()):
-        if name.startswith("test_"):
-            fn()
-            print("ok", name)
+def test_store_basic_matches_typing():
+    """中間コードを直に置くと、打ち込んだときとプログラムと終わりの番地が同じになり、
+    MEMも同じで、そのまま動く。長すぎる行があれば置かずに打ち込みに回す"""
+    from helpers import typed_and_stored
+
+    from pc1251emu import basictext, keytype
+
+    src = (
+        '10 PRINT "GOTO 10";A$:INPUT "X?";X\n'
+        "20 A=1[E]3:B=π*√4:IF A>=B AND C<>D THEN 10\n"
+        '30 DATA 1,TO,"a b":REM  print  TO\n'
+        '5 print "ok":END:@(1)=0\n'
+        "20 B=2\n"
+    )
+    typed, stored = typed_and_stored("1251", src)
+    end = typed.mem[0xC6E3] | typed.mem[0xC6E4] << 8  # 終わりのFFの番地
+    assert stored.mem[0xC6E3:0xC6E5] == typed.mem[0xC6E3:0xC6E5]
+    assert bytes(stored.mem[0xB830 : end + 1]) == bytes(typed.mem[0xB830 : end + 1])
+    assert typ(typed, Typer(typed), "MEM\n") == typ(stored, Typer(stored), "MEM\n")
+    t = Typer(stored)
+    assert typ(stored, t, "RUN\n", wait=1, mode="RUN").strip() == "OK"
+    long = "10 A$=" + '"' + "1" * 80 + '"\n'
+    assert basictext.encode_program(keytype.typed_text(long), stored.mem) is None
+
+
+def test_pc1250_and_pc1255():
+    """PC-1250とPC-1255はPC-1251のROMで動き、RAMの範囲だけが違う。MEMはカタログの値になり、
+    PC-1251用の見本は、番地がRAMに収まりBASICにかからなければ一覧に出る"""
+    from pc1251emu import basictext, programs
+
+    for model, start, free in (
+        ("1250", 0xC030, "1438"),
+        ("1251", 0xB830, "3486"),
+        ("1255", 0xA030, "9630"),
+    ):
+        m, t = boot(model)
+        assert typ(m, t, "MEM\n").strip().rstrip("?") == free
+        assert m.program_start() == start
+        typ(m, t, "10 PRINT 7\n", mode="PRO")
+        assert basictext.program_text(m.mem, start=start) == "10 PRINT 7\n"
+        assert typ(m, t, "RUN\n", mode="RUN").strip().rstrip("?") == "7"
+    here = os.path.join(os.path.dirname(__file__), "..", "programs")
+    items = programs.scan([here])
+    names = {
+        model: {p.name for p in programs.for_model(items, model)} for model in ("1250", "1255")
+    }
+    assert {"break", "scroll", "ball", "pcint"} <= names["1255"]
+    assert "pcint" in names["1250"]
+    assert "break" not in names["1250"]  # C000からの見本はBASICにかかる
+    # 絵はPC-1251のものを使い、型番を刷り替えた本体の絵だけが機種ごとにある
+    from pc1251emu import display
+
+    for model in ("1250", "1255"):
+        assert display.asset_path(model, "keys.json") == display.asset_path("1251", "keys.json")
+        assert f"pc{model}" in display.asset_path(model, "body_top.png")
