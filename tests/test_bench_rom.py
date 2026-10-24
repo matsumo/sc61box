@@ -379,3 +379,24 @@ def test_unwritable_places_are_reported(tmp_path, monkeypatch):
     app.save_ram = True
     app.close()  # RAMを保存できなくても止まらない
     assert blocker.read_text("utf-8") == "x"
+
+
+def test_loading_forgets_edits(tmp_path, monkeypatch):
+    """ROMのある本体でも、プログラムを読み込むと、前の書き込みは取り消せなくなる
+    (読み込んだプログラムを、前の書き込みを戻して壊さない)"""
+    from pc1251emu import programs
+
+    app = _rom_app(tmp_path, monkeypatch)
+    b = app.bench
+    b.paste("C000 AA")
+    assert b.undos
+    src = tmp_path / "rtn.hex"
+    src.write_text("C000 37\n", "utf-8")
+    app.open_program(programs.load_program(str(src)))
+    for _ in range(5):
+        app.frame()
+    assert app.m.read(0xC000) == 0x37
+    assert not b.undos and not b.redos
+    assert b.undo() == "取り消せる書き込みはありません"
+    assert app.m.read(0xC000) == 0x37
+    app.close()

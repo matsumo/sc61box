@@ -172,6 +172,7 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+V | Ctrl+V | type the clipboard text in (while keys go to the workbench, paste a dump into it) |
 | Cmd+K | Ctrl+K | make the arrow keys press 8, 2, 4, 6 on the keypad, or back |
 | Cmd+D | Ctrl+D | show or hide the machine-code workbench (with a ROM) |
+| Cmd+Z | Ctrl+Z | undo a write in the workbench (Shift+Cmd+Z redoes it) |
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
 

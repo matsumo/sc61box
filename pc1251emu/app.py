@@ -135,7 +135,7 @@ HELP_NOROM = [
     "0〜9・A〜F: ダンプを書く   Enter: 次の行   Space: 番地からバイトへ   Tab: 番地を打ち直す",
     f"{CMD}G: 実行・続ける   {SHIFT}{CMD}G: カーソルから実行   {CMD}.: 一時停止   Esc: 編集に戻る",
     f"{CMD}J: 次の1命令だけ実行   {SHIFT}{CMD}J: CALLの呼び先を戻るまで実行   {CMD}B: 止める所",
-    f"{CMD}V: 本のダンプリストや.hexを貼り付け",
+    f"{CMD}V: 本のダンプリストや.hexを貼り付け   {CMD}Z: 取り消す   {SHIFT}{CMD}Z: やり直す",
     f"PageUp・PageDown: 1画面   Home・End({CMD}←→): 行の頭・終わり   {CMD}↑↓: 開始番地・終わり",
     f"{CMD}E: 開始番地からを.hexに書き出す   {CMD}O: プログラムの一覧(.hexのマシン語だけを使う)",
     "実行中のキーは本体へ(Tab: SHIFT  Option: DEF  Delete: CL  Esc: BRK)",
@@ -501,6 +501,7 @@ class App:
             pygame.K_b: lambda: self.bench_do("break"),
             pygame.K_v: self.bench_paste,
             pygame.K_e: self.bench_export,
+            pygame.K_z: lambda: self.bench_undo(redo=shift),
         }
         act = actions.get(key)
         if act is None:
@@ -532,6 +533,9 @@ class App:
             b.step_over()
         elif what == "abandon":
             b.abandon()
+        elif what in ("undo", "redo"):
+            self.bench_undo(redo=what == "redo")
+            return
         elif what == "break":
             a = b.ins_at(b.cursor)
             on = b.toggle_break(a)
@@ -599,7 +603,8 @@ class App:
             return
         kind, a = hit
         if kind == "button":
-            self.bench_do(v.buttons[a].action)
+            if v.buttons[a].enabled:
+                self.bench_do(v.buttons[a].action)
         elif kind == "clearlcd":
             b.clear_lcd = not b.clear_lcd
         elif kind == "export":
@@ -651,6 +656,16 @@ class App:
         self.say(f"{done}\n{prog.norom}" if prog.norom else done, 12 if prog.norom else 6)
         if run:
             self.bench_do("run")
+
+    def bench_undo(self, redo: bool = False) -> None:
+        """作業欄の書き込みを取り消す(redoならやり直す)。ROMのある本体では、続けて⌘Zで
+        取り消せるように、キーを作業欄で受けるようにする"""
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        done = b.can_redo() if redo else b.can_undo()
+        v.say(b.redo() if redo else b.undo(), 3, ok=done)
+        if done and b.rom:
+            v.focus = True
 
     def bench_paste(self) -> None:
         """クリップボードのダンプ(本のダンプリストか.hexの行)を書く"""
@@ -920,6 +935,17 @@ class App:
                 paste,
                 item("置き場所のフォルダを開く", "", lambda: self.reveal(programs.user_dir())),
             ]
+            if self.norom or self.pane_open:
+                # 作業欄の書き込みの取り消しとやり直し。下に、何を取り消すか(できなければ理由)
+                note, on = self.bench.undo_note()
+                rnote, ron = self.bench.undo_note(redo=True)
+                items += [
+                    sep,
+                    item("ダンプの書き込みを取り消す", f"{CMD}Z", self.bench_undo, note,
+                         enabled=on),
+                    item("ダンプの書き込みをやり直す", f"{SHIFT}{CMD}Z",
+                         lambda: self.bench_undo(redo=True), rnote, enabled=ron),
+                ]  # fmt: skip
             if self.load_help:
                 show = lambda: self.say(self.load_help, 20)  # noqa: E731
                 items += [sep, item("読み込んだプログラムの説明", "", show, self.loading)]
@@ -1216,6 +1242,8 @@ class App:
         self.undo_state, self.undo_title = m.snapshot(), prog.title or prog.name
         self.undo_prog = (self.last_prog, self.loading, self.load_help)
         self.undo_bench = self.bench.save()
+        # 読み込みを始めたら、前の書き込みは取り消せなくする(読み込みは「読み込む前に戻す」で)
+        self.bench.forget_edits()
         # 作業欄の開始番地は、呼び出し用のBASICの最後のCALLの番地(なければ最初のダンプの
         # 番地)にする。書いた範囲は、ダンプを実際にRAMに書いたとき(write_dump)に覚える
         _pokes, call = workbench.basic_hints(f"{prog.basic}\n{prog.run}")

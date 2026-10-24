@@ -779,3 +779,155 @@ def test_internal_ram_folded_on_small_screen(tmp_path, monkeypatch):
     app = make_app(scale=0.5, frames=2, norom=True)
     assert app.bench_view is not None and not app.bench_view.show_iram
     app.close()
+
+
+def test_undo_typing_byte_by_byte():
+    """打ち込みは1バイト(2桁)ずつ取り消せ、やり直せる。取り消すとカーソルも戻り、
+    書いた印(書き出す範囲)も消える"""
+    m, b = bench()
+    type_line(b, "C000 0102")
+    assert bytes(m.mem[0xC000:0xC002]) == b"\x01\x02"
+    assert b.undo() == "C001番地の打ち込みを取り消しました"
+    assert bytes(m.mem[0xC000:0xC002]) == b"\x01\x00"
+    assert (b.cursor, b.nib, b.field) == (0xC001, 0, "data")
+    assert b.redo() == "C001番地の打ち込みをやり直しました"
+    assert m.mem[0xC001] == 2 and b.cursor == 0xC002
+    b.undo()
+    b.undo()
+    assert m.mem[0xC000] == 0 and b.export_ranges() == []
+    assert b.undo() == "取り消せる書き込みはありません"
+
+
+def test_undo_half_typed_byte_and_new_edit_clears_redo():
+    """上の桁だけ打ったバイトも取り消せる。取り消したあとに打つと、やり直しは消える"""
+    m, b = bench()
+    type_line(b, "C000 4")
+    assert m.mem[0xC000] == 0x40
+    b.undo()
+    assert m.mem[0xC000] == 0 and b.nib == 0
+    type_line(b, "55")
+    assert b.redo() == "やり直せる書き込みはありません"
+    assert m.mem[0xC000] == 0x55
+
+
+def test_undo_paste_restores_bytes_and_start():
+    """貼り付けは1回分まとめて取り消し、開始番地も貼り付ける前に戻る"""
+    m, b = bench()
+    type_line(b, "C100 99")
+    b.start = 0xC000
+    res = b.paste("C0FE 1122334455")
+    assert res.written == 5 and b.start == 0xC0FE and m.mem[0xC100] == 0x33
+    assert b.undo() == "貼り付け(5バイト)を取り消しました"
+    assert bytes(m.mem[0xC0FE:0xC103]) == bytes.fromhex("0000990000")
+    assert b.start == 0xC000
+    b.redo()
+    assert m.mem[0xC100] == 0x33 and b.start == 0xC0FE
+
+
+def test_undo_keeps_running_code_alone():
+    """実行中(ROMなし)は取り消せない。読み込んだダンプの前の書き込みは取り消せなくなる"""
+    m, b = bench()
+    b.paste("C000 2D01")  # JR C000(自分へ)
+    b.run()
+    assert b.undo() == "実行中は取り消せません"
+    b.abandon()
+    b.load_blocks([(0xC200, b"\x37")])
+    assert b.undo() == "取り消せる書き込みはありません"
+
+
+def test_undo_shortcut_and_menu():
+    """⌘Z(Ctrl+Z)で取り消し、⇧⌘Zでやり直す。プログラムのメニューにも同じ項目がある"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b = app.bench
+    assert b is not None
+    _type(app, "C000 AB")
+    assert app.m.mem[0xC000] == 0xAB
+    _key(app, pygame.K_z, "z", pygame.KMOD_CTRL)
+    assert app.m.mem[0xC000] == 0
+    _key(app, pygame.K_z, "z", pygame.KMOD_CTRL | pygame.KMOD_SHIFT)
+    assert app.m.mem[0xC000] == 0xAB
+    items = {it.label: it for it in app.popup_items("program") if it.action}
+    assert items["ダンプの書き込みを取り消す"].note == "C000番地をABから00に戻す"
+    undo = items["ダンプの書き込みを取り消す"].action
+    assert undo is not None
+    undo()
+    assert app.m.mem[0xC000] == 0
+    app.close()
+
+
+def test_undo_paste_through_ram_mirror():
+    """同じRAMを指す鏡の番地(PC-1251のB000〜B7FFはB800〜BFFF)を1回で貼り付けても、
+    取り消すと貼り付ける前の値と書いた印に戻る"""
+    m, b = bench()
+    b.paste("B800 11\nB000 22\n")
+    assert m.read(0xB800) == 0x22
+    b.undo()
+    assert m.read(0xB800) == 0 and m.read(0xB000) == 0
+    assert not b.written[0xB800] and b.export_ranges() == []
+    b.redo()
+    assert m.read(0xB800) == 0x22 and b.written[0xB800]
+
+
+def test_undo_disabled_states():
+    """取り消せないときは、メニューの項目と作業欄のボタンを押せない状態にし、理由を出す。
+    取り消せたことの知らせは警告の色にしない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+
+    def menu():
+        return {it.label: it for it in app.popup_items("program") if it.action}
+
+    undo = menu()["ダンプの書き込みを取り消す"]
+    assert not undo.enabled and undo.note == "取り消せる書き込みはありません"
+    app.frame()
+    btn = next(x for x in v.buttons if x.action == "undo")
+    assert not btn.enabled
+    _type(app, "C000 2D01")  # JR C000(自分へ)
+    app.frame()
+    assert next(x for x in v.buttons if x.action == "undo").enabled
+    app.bench_do("run")
+    app.frame()
+    assert not menu()["ダンプの書き込みを取り消す"].enabled
+    assert menu()["ダンプの書き込みを取り消す"].note == "実行中は取り消せません"
+    app.bench_do("pause")
+    app.bench_do("abandon")
+    app.bench_undo()
+    assert v.flash_ok and app.m.mem[0xC001] == 0
+    b.undos.clear()
+    app.bench_undo()
+    assert not v.flash_ok
+    app.close()
+
+
+def test_undo_button_in_pane():
+    """作業欄の取り消すボタンを押すと、1バイトの打ち込みを取り消す"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    v = app.bench_view
+    assert v is not None
+    _type(app, "C000 AB")
+    app.frame()
+    btn = next(x for x in v.buttons if x.action == "undo")
+    assert btn.tip.startswith("C000番地をABから00に戻す")
+    app.bench_click(btn.rect.center)
+    assert app.m.mem[0xC000] == 0
+    app.close()
+
+
+def test_undo_notes_read_naturally_and_dump_stays():
+    """取り消しの説明は、1バイトなら値の変化、ほかは「貼り付け(2バイト)を取り消す」の形。
+    書き出す範囲がなくなっても、ダンプの位置は変わらない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    b.paste("C000 0102")
+    assert b.undo_note() == ("貼り付け(2バイト)を取り消す", True)
+    v._ranges = ([], 0.0)
+    app.frame()
+    top = next(r for r, kind, a in v.hits if kind == "addr").y
+    b.undo()
+    assert b.undo_note(redo=True) == ("貼り付け(2バイト)をやり直す", True)
+    v._ranges = ([], 0.0)
+    app.frame()
+    assert next(r for r, kind, a in v.hits if kind == "addr").y == top
+    app.close()

@@ -326,6 +326,7 @@ class MenuItem(NamedTuple):
     action: Callable[[], object] | None = None
     note: str = ""
     icon: str = ""
+    enabled: bool = True  # Falseなら暗く出し、選べない(noteに理由を書く)
 
 
 SEPARATOR = MenuItem("")
@@ -360,7 +361,7 @@ class Popup:
 
     def move(self, step: int, items: list) -> None:
         """区切り線を飛ばして選ぶ項目を動かす"""
-        live = [i for i, it in enumerate(items) if it.action is not None]
+        live = [i for i, it in enumerate(items) if it.action is not None and it.enabled]
         k = live.index(self.sel) if self.sel in live else (-1 if step > 0 else 0)
         self.sel = live[(k + step) % len(live)]
 
@@ -401,19 +402,21 @@ class Popup:
                 pygame.draw.line(box, (80, 82, 88), (8, mid), (width - 8, mid))
                 cy += h
                 continue
-            if i == self.sel:
+            ink = WHITE if it.enabled else (110, 112, 118)
+            if i == self.sel and it.enabled:
                 pygame.draw.rect(box, SELECTED, (4, cy, width - 8, h))
             if it.icon:
                 _icon(box, it.icon, 12, cy + lh // 2)
             elif text == mark:
                 box.blit(font.render("●", True, WHITE), (12, cy + 3))
-            box.blit(font.render(text, True, WHITE), (32, cy + 3))
+            box.blit(font.render(text, True, ink), (32, cy + 3))
             if key:
-                img = font.render(key, True, (150, 152, 158))
+                img = font.render(key, True, (150, 152, 158) if it.enabled else (90, 92, 98))
                 box.blit(img, (width - 14 - img.get_width(), cy + 3))
             if h > lh:
                 box.blit(small.render(it.note, True, (170, 172, 178)), (34, cy + lh - 3))
-            self.rows.append((i, pygame.Rect(x + 4 * f, y + cy * f, (width - 8) * f, h * f)))
+            if it.enabled:  # 選べない項目はクリックしても当たらない
+                self.rows.append((i, pygame.Rect(x + 4 * f, y + cy * f, (width - 8) * f, h * f)))
             cy += h
         if f < 1.0:
             box = pygame.transform.smoothscale(box, (int(width * f), int(height * f)))

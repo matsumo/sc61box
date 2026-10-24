@@ -40,6 +40,24 @@ class PasteResult:
     outside: int = 0  # RAMの外で書けなかったバイト数
 
 
+@dataclass
+class Edit:
+    """取り消せる書き込み1回分(1バイトの打ち込みか、1回の貼り付け)。書く前と書いたあとの
+    メモリを比べて、変わったところだけを持つ。番地はメモリの実体の番地(鏡の番地に書いても、
+    同じRAMは1つにまとまる)。before・afterは書く前と書いたあとのカーソルと開始番地"""
+
+    what: str  # 知らせに出す名前(「C003番地の打ち込み」など)
+    mem: dict[int, tuple[int, int]] = field(default_factory=dict)  # 実体の番地: (前, 後)
+    marks: dict[int, tuple[int, int]] = field(default_factory=dict)  # 書いた印: (前, 後)
+    before: tuple = ()
+    after: tuple = ()
+    at: int = 0  # 打ち込んだ番地(打ち込みのとき)
+    partial: bool = False  # 上の桁だけを打った打ち込み(続けて下の桁を打てば同じ1回にする)
+
+
+UNDO_MAX = 500  # 取り消せる回数
+
+
 HEX4 = re.compile(r"[0-9A-Fa-f]{4}:?")
 HEXS = re.compile(r"(?:[0-9A-Fa-f]{2})+")
 
@@ -150,6 +168,9 @@ class Bench:
         # 作業欄から書いた番地(打ち込み、貼り付け、ファイルの読み込み)。書き出す範囲に使う。
         # 0のバイトも書いたものとして数える(命令やデータの0、置き場所をあけるための0)
         self.written = bytearray(0x10000)
+        # 書き込みの取り消しとやり直し。プログラムの読み込みと状態の復元で空にする
+        self.undos: list[Edit] = []
+        self.redos: list[Edit] = []
 
     # ---- メモリ ----
     def read(self, a: int) -> int:
@@ -168,15 +189,113 @@ class Bench:
         return lo <= a < hi or bool(mirror and mirror[0] <= a < mirror[1])
 
     def write(self, a: int, v: int) -> bool:
+        """番地aにvを書き、書いた印をつける"""
         a &= 0xFFFF
         if not self.m.writable(a):
             return False
         self.m.write(a, v & 0xFF)
+        self.written[self._mark_at(a)] = 1
+        return True
+
+    def _mark_at(self, a: int) -> int:
+        """書いた印を置く番地。鏡の番地に書いたものは、RAMの番地に書いたものとして数える"""
         mirror = self.m.model.mirror
         if mirror and mirror[0] <= a < mirror[1]:
-            a += mirror[2]  # 鏡の番地に書いたものは、RAMの番地に書いたものとして数える
-        self.written[a] = 1
-        return True
+            return a + mirror[2]
+        return a
+
+    # ---- 取り消しとやり直し ----
+    def _view(self) -> tuple:
+        return (self.row, self.col, self.nib, self.field, self.top_rows, self.start)
+
+    def _set_view(self, view: tuple) -> None:
+        self.row, self.col, self.nib, self.field, self.top_rows, self.start = view
+        self.addr_done = False
+
+    def _begin(self, what: str, edit: Edit | None = None) -> Edit:
+        """書き込みを始める。書く前のメモリと書いた印を控えておく(editがあれば、その続き)"""
+        self._before = (bytes(self.m.mem), bytes(self.written))
+        return edit if edit is not None else Edit(what, before=self._view())
+
+    def _commit(self, edit: Edit) -> None:
+        """書き終えた書き込みを、取り消せるものとして積む。前からの続きなら、書く前の値は
+        最初のものを残す。何も変わらなければ積まない"""
+        mem0, marks0 = self._before
+        for now, old, diff in ((self.m.mem, mem0, edit.mem), (self.written, marks0, edit.marks)):
+            for i in [i for i, (x, y) in enumerate(zip(old, now, strict=True)) if x != y]:
+                first = diff[i][0] if i in diff else old[i]
+                diff[i] = (first, now[i])
+            for i in [i for i, (x, y) in diff.items() if x == y]:
+                del diff[i]
+        edit.after = self._view()
+        if not edit.mem and not edit.marks:
+            return
+        self.undos.append(edit)
+        del self.undos[:-UNDO_MAX]
+        self.redos.clear()
+
+    _before: tuple[bytes, bytes] = (b"", b"")
+
+    def forget_edits(self) -> None:
+        """取り消しとやり直しの履歴を捨てる(プログラムを読み込んだときなど)"""
+        self.undos.clear()
+        self.redos.clear()
+
+    def _apply(self, edit: Edit, new: bool) -> None:
+        for a, (old, val) in edit.mem.items():
+            self.m.write(a, val if new else old)  # 実体の番地に書く
+            self.changed.discard(a)
+        for a, (old, val) in edit.marks.items():
+            self.written[a] = val if new else old
+        self._set_view(edit.after if new else edit.before)
+
+    def can_undo(self) -> bool:
+        return bool(self.undos) and not (self.state == "run" and not self.rom)
+
+    def can_redo(self) -> bool:
+        return bool(self.redos) and not (self.state == "run" and not self.rom)
+
+    def undo_note(self, redo: bool = False) -> tuple[str, bool]:
+        """取り消し(redoならやり直し)の説明と、いまできるか。できなければ説明は理由"""
+        stack, verb = (self.redos, "やり直") if redo else (self.undos, "取り消")
+        if self.can_redo() if redo else self.can_undo():
+            return self.describe(stack[-1], not redo), True
+        if stack:
+            return f"実行中は{verb}せません", False
+        return f"{verb}せる書き込みはありません", False
+
+    @staticmethod
+    def describe(edit: Edit, undo: bool) -> str:
+        """ボタンやメニューに出す説明(取り消すか、やり直すと何が起きるか)。1バイトの
+        打ち込みなら値の変化を書く(「C003番地をABから00に戻す」)"""
+        if edit.at and len(edit.mem) == 1:
+            old, new = next(iter(edit.mem.values()))
+            if undo:
+                return f"{edit.at:04X}番地を{new:02X}から{old:02X}に戻す"
+            return f"{edit.at:04X}番地を{old:02X}から{new:02X}にする"
+        return f"{edit.what}を" + ("取り消す" if undo else "やり直す")
+
+    def undo(self) -> str:
+        """直前の書き込みを取り消す。知らせの文を返す"""
+        if self.state == "run" and not self.rom:
+            return "実行中は取り消せません"
+        if not self.undos:
+            return "取り消せる書き込みはありません"
+        edit = self.undos.pop()
+        self._apply(edit, new=False)
+        self.redos.append(edit)
+        return f"{edit.what}を取り消しました"
+
+    def redo(self) -> str:
+        """取り消した書き込みをやり直す。知らせの文を返す"""
+        if self.state == "run" and not self.rom:
+            return "実行中はやり直せません"
+        if not self.redos:
+            return "やり直せる書き込みはありません"
+        edit = self.redos.pop()
+        self._apply(edit, new=True)
+        self.undos.append(edit)
+        return f"{edit.what}をやり直しました"
 
     def row_bytes(self, a: int) -> bytes:
         return bytes(self.read(a + i) for i in range(ROW))
@@ -205,14 +324,24 @@ class Bench:
         a = self.cursor
         old = self.read(a)
         new = (old & 0x0F | v << 4) if self.nib == 0 else (old & 0xF0 | v)
-        if not self.write(a, new):
+        if not self.m.writable(a):
             return f"{a:04X}番地はRAMの外なので書けません"
+        # 1バイトの2桁は、続けて打てば1回の打ち込みとして取り消す
+        top = self.undos[-1] if self.undos else None
+        if self.nib == 1 and top is not None and top.partial and top.at == a:
+            edit = self._begin("", self.undos.pop())
+        else:
+            edit = self._begin(f"{a:04X}番地の打ち込み")
+            edit.at = a
+        edit.partial = self.nib == 0
+        self.write(a, new)
         self.changed.discard(a)
         if self.nib == 0:
             self.nib = 1
         else:
             self.nib = 0
             self.col += 1
+        self._commit(edit)  # 取り消したあとのやり直しで、カーソルを打ったあとの所へ戻すため
         return ""
 
     def next_line(self) -> None:
@@ -321,6 +450,7 @@ class Bench:
         res = PasteResult()
         rows, res.skipped = parse_dump(text)
         at = self.cursor if self.field == "data" else self.row
+        edit = self._begin("貼り付け")
         for addr, data, total in rows:
             if addr is not None:
                 at = addr
@@ -338,6 +468,9 @@ class Bench:
         if res.first is not None:
             self.start = res.first
             self.go(res.first)
+        if res.written:
+            edit.what = f"貼り付け({res.written}バイト)"
+            self._commit(edit)
         return res
 
     def note_written(self, blocks: list[tuple[int, bytes]]) -> None:
@@ -362,7 +495,9 @@ class Bench:
             self.go(start)
 
     def load_blocks(self, blocks: list[tuple[int, bytes]], start: int | None = None) -> int:
-        """ファイルから読んだダンプを書く。書いたバイト数を返す"""
+        """ファイルから読んだダンプを書く。書いたバイト数を返す。読み込む前の書き込みは
+        取り消せなくする(読み込みは「プログラムを読み込む前に戻す」で戻す)"""
+        self.forget_edits()
         n = 0
         for addr, data in blocks:
             for i, b in enumerate(data):
@@ -476,6 +611,7 @@ class Bench:
         breaks = info.get("breaks")
         self.breaks = {a for a in breaks if addr(a, -1) >= 0} if isinstance(breaks, list) else set()
         self.written = bytearray(0x10000)
+        self.forget_edits()
         spans = info.get("written")
         for span in spans if isinstance(spans, list) else []:
             if isinstance(span, list) and len(span) == 2:
@@ -798,6 +934,7 @@ OK = (120, 200, 140)
 WARN = (236, 120, 110)
 BTN = (58, 61, 68)
 BTN_ON = (84, 90, 104)
+BG_DIM = (44, 46, 52)  # 押せないボタンの地
 TIP_BG = (14, 15, 18)
 WHITE = (240, 240, 235)
 
@@ -818,6 +955,7 @@ class Button:
     action: str
     tip: str
     rect: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 0, 0))
+    enabled: bool = True  # 押せないときは暗く出し、押しても何もしない(説明は出す)
 
 
 class BenchView:
@@ -836,6 +974,7 @@ class BenchView:
         self.rows = 8  # ダンプと逆アセンブルの行の数
         self.hover = -1
         self.flash = ""  # 打てなかったときなどの短い知らせ
+        self.flash_ok = False  # 済んだことの知らせなら緑、ほかは赤で出す
         self.flash_until = 0.0
         self.followed = -1  # 一時停止中に、ダンプをPCの行へ動かしたときのPC
         self.show_iram = True  # 内部RAMの16進表記を出すか(見出しのクリックで開く・閉じる)
@@ -845,9 +984,11 @@ class BenchView:
         # 書き出す範囲と、それを求めた時刻(RAMを調べるので、毎フレームは求めない)
         self._ranges: tuple[list[tuple[int, int]], float] = ([], 0.0)
 
-    def say(self, text: str, seconds: float = 3.0) -> None:
+    def say(self, text: str, seconds: float = 3.0, ok: bool = False) -> None:
+        """作業欄の下に短く出す知らせ。okなら済んだことの知らせ(ふつうは打てなかったなど)"""
         self.flash = text
         self.flash_until = time.monotonic() + seconds
+        self.flash_ok = ok
 
     IRAM_ROWS = 6  # 内部RAMの行の数(16バイトずつ)
     STATUS_LINES = 2  # 作業欄のいちばん下の知らせの行の数
@@ -998,17 +1139,41 @@ class BenchView:
         y = self._export_line(dst, x0, y + 24)
         self._draw_rest(dst, rect, x0, y)
 
+    def _undo_buttons(self, dst: pygame.Surface, right: int, y: int) -> None:
+        """書き出しの行の右端に、取り消しとやり直しのボタンを置く(実行のボタンとは分ける)。
+        押せないときは暗く出し、マウスを載せると理由を出す"""
+        b, c, s = self.b, self.cmd, self.shift
+        note, on = b.undo_note()
+        undo = Button("取り消す", "undo", f"{note}({c}Z)" if on else note, enabled=on)
+        note, on = b.undo_note(redo=True)
+        redo = Button("やり直す", "redo", f"{note}({s}{c}Z)" if on else note, enabled=on)
+        bx = right
+        for btn in (redo, undo):
+            w = self.jfont.size(btn.label)[0] + 16
+            bx -= w
+            btn.rect = pygame.Rect(bx, y - 2, w, 24)
+            bx -= 6
+        for btn in (undo, redo):
+            i = len(self.buttons)
+            self.buttons.append(btn)
+            color = (BTN_ON if i == self.hover else BTN) if btn.enabled else BG_DIM
+            pygame.draw.rect(dst, color, btn.rect, border_radius=5)
+            self._text(dst, btn.rect.x + 8, y + 1, btn.label, FG if btn.enabled else DIM,
+                       self.jfont)  # fmt: skip
+
     def _export_line(self, dst: pygame.Surface, x0: int, y: int) -> int:
-        """書き出しのボタンと合計のバイト数、次の行から書き出す範囲(作業欄の幅で折り返す)。
-        ボタンはいつも左端に置き、範囲がいくつあっても位置が変わらないようにする。ボタンを
-        押すと書き出す(⌘Eと同じ)"""
+        """書き出しのボタン(右端に取り消しとやり直しのボタン)、次の行から書き出す範囲と合計の
+        バイト数(作業欄の幅で折り返す)。ボタンはいつも左端に置き、範囲がいくつあっても位置が
+        変わらないようにする。ボタンを押すと書き出す(⌘Eと同じ)"""
         ranges, at = self._ranges
         if time.monotonic() - at > 0.5:  # RAMを調べるので、0.5秒に1回だけ求める
             ranges = self.b.export_ranges()
             self._ranges = (ranges, time.monotonic())
+        self._undo_buttons(dst, x0 + PANE_W - 24, y)
         if not ranges:
             self._text(dst, x0, y, "書き出すダンプはまだありません", DIM, self.jfont)
-            return y + 24
+            # 範囲の1行分をあけておき、取り消しで範囲がなくなってもダンプの位置を変えない
+            return y + 26 + 20 + 4
         label = f".hexに書き出す {self.cmd}E"
         btn = pygame.Rect(x0, y - 2, self.jfont.size(label)[0] + 16, 24)
         pygame.draw.rect(dst, BTN, btn, border_radius=5)
@@ -1016,11 +1181,10 @@ class BenchView:
         self.hits.append((btn, "export", 0))
         size = sum(hi - lo for lo, hi in ranges)
         where = f"{len(ranges)}か所、" if len(ranges) > 1 else ""
-        self._text(dst, btn.right + 10, y + 1, f"{where}合計{size}バイト", FG, self.jfont)
         y += 26
         # 範囲は2行まで。入りきらなければ、残りの数を出す
         width = PANE_W - 24
-        lines, line = [], "範囲 "
+        lines, line = [], f"範囲({where}合計{size}バイト) "
         for k, (lo, hi) in enumerate(ranges):
             part = f"{lo:04X}〜{hi - 1:04X}" + ("、" if k < len(ranges) - 1 else "")
             rest = len(ranges) - k - 1
@@ -1213,7 +1377,7 @@ class BenchView:
     def _status(self, dst, x0: int, y: int, width: int) -> None:
         b = self.b
         if self.flash and time.monotonic() < self.flash_until:
-            text, color = self.flash, WARN
+            text, color = self.flash, OK if self.flash_ok else WARN
         elif b.reason:
             text, color = b.reason, OK if b.state == "edit" else REGCHG
         else:
