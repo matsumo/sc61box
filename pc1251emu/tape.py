@@ -43,7 +43,8 @@ def render(events: list[tuple[int, int]], c0: int, c1: int) -> array:
 
 
 def write_wav(path: str, samples: array) -> None:
-    with wave.open(path, "wb") as w:
+    # ファイルを先に開く(開けないときに、作りかけのwave.Wave_writeが後始末で警告を出さない)
+    with open(path, "wb") as f, wave.open(f, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(RATE)

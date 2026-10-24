@@ -1,4 +1,5 @@
 # title: もぐらたたき(PC-インタープリタ)
+# norom: off
 # model: 1251,1245
 # hex: pcint.hex
 # run: RUN 900

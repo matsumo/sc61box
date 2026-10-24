@@ -96,10 +96,14 @@ def library_dirs() -> list[str]:
 
 
 def user_dir() -> str:
-    """ユーザーがファイルを置くところ(なければ作る)"""
+    """ユーザーがファイルを置くところ(なければ作る)。作れなくても(同じ名前のファイルがある
+    など)ここでは止まらずに場所を返す。そこへ書くところで失敗し、それぞれが知らせる"""
     env = [d for d in os.environ.get("PC1251_PROGRAMS", "").split(os.pathsep) if d]
     d = os.path.abspath(env[0]) if env else os.path.expanduser("~/.pc1251/programs")
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass
     return d
 
 
@@ -112,6 +116,7 @@ class Program:
     mode: str = ""  # # run:を打つモード。空ならRUN
     setup: str = ""  # NEWのあとに打つ命令。いくつもあれば改行でつなぐ
     help: str = ""  # 読み込んだあとに出す説明。いくつもあれば改行でつなぐ
+    norom: str = ""  # ROMなしで読み込んだときに出す説明(# norom:)。いくつもあれば改行でつなぐ
     basic: str = ""  # 打ち込むBASICの行(コメントを除いたもの)
     blocks: list[tuple[int, bytes]] = field(default_factory=list)
     after: list[tuple[int, bytes]] = field(default_factory=list)  # # after: で、実行のあとに書く
@@ -120,6 +125,11 @@ class Program:
         default_factory=list
     )  # 「after: code.hex」など、ダンプの指示(書き出し用)
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def norom_ok(self) -> bool:
+        """ROMなしで使えるか。マシン語のダンプがあり、# norom: offでないもの"""
+        return bool(self.blocks or self.after) and self.norom.strip().lower() != "off"
 
     @property
     def models(self) -> list[str] | None:
@@ -205,7 +215,7 @@ def _directive(line: str) -> tuple[str, str] | None:
         return None
     key, val = body.split(":", 1)
     key = key.strip().lower()
-    if key in ("title", "run", "hex", "bin", "after", "model", "mode", "setup", "help"):
+    if key in ("title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom"):
         return key, val.strip()
     return None
 
@@ -320,7 +330,7 @@ def _read_into(prog: Program, path: str) -> None:
             d = _directive(line.strip())
             if d and d[0] in ("hex", "bin", "after"):
                 _add_hex(prog, d[1], os.path.dirname(path), d[0])
-            elif d and d[0] in ("run", "setup", "help") and d[1]:
+            elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:
                 old = getattr(prog, d[0])
                 setattr(prog, d[0], old + "\n" + d[1] if old else d[1])
             elif d and not getattr(prog, d[0]):

@@ -1,37 +1,11 @@
 """文字列を各機種のキー操作に直す(貼り付けと自動入力用)"""
 
-import re
 import unicodedata
 
-# 指数のE。テキストでは「[E]」(PocketToolsと同じ)か、数のあとの小文字の「e」(1e-8など)と
-# 書く。打つときは、テキストには出てこない1字(私用領域の字)にまとめる
-EXP = "\ue04b"
+# 指数のE。テキストでは「[E]」か「€」と書く(PocketToolsと同じ)。打つときは1字にまとめる。
+# 小文字のeは指数にしない(PC-1261などでは英小文字を打てるので、英字のeと区別できない)
+EXP = "€"
 EXP_SPELLINGS = ("[E]", "[e]")
-# 数のあとの小文字のe。前に英字や数字が続かない数(変数の名前の一部でない)の直後で、
-# 後ろに数字(符号つきでもよい)が続くもの。大文字のEは英字のまま(PC-1251では「2E-1」が
-# 2×E−1になる)
-_SMALL_E = re.compile(r"(?<![A-Za-z0-9.])(\d+\.?\d*|\.\d+)e(?=[+-]?\d)")
-
-
-def _small_e(line: str) -> str:
-    """1行の、文字列とREMのあとの外にある「数のあとの小文字のe」を指数の字にする"""
-
-    def conv(part: str) -> str:
-        return _SMALL_E.sub(lambda hit: hit[1] + EXP, part)
-
-    out, start, quoted = [], 0, False
-    for i, ch in enumerate(line):
-        if quoted:
-            if ch == '"':
-                out.append(line[start : i + 1])
-                start, quoted = i + 1, False
-        elif ch == '"':
-            out.append(conv(line[start:i]))
-            start, quoted = i, True
-        elif line[i : i + 3].upper() == "REM":  # REMのあとは行の終わりまでそのまま
-            return "".join([*out, conv(line[start:i]), line[i:]])
-    out.append(line[start:] if quoted else conv(line[start:]))
-    return "".join(out)
 
 
 def normalize(text: str) -> str:
@@ -40,8 +14,6 @@ def normalize(text: str) -> str:
     ¥キーで「\\」が入る設定でも¥が打てるように)"""
     for s in EXP_SPELLINGS:
         text = text.replace(s, EXP)
-    if "e" in text:
-        text = "\n".join(_small_e(line) for line in text.split("\n"))
     return text.replace("\\", "¥")
 
 

@@ -145,8 +145,8 @@ def program_text(mem, keywords: dict[int, str] | None = None, start: int = PROG_
 
 # 行番号の桁と中身(中間コード)を合わせて79字まで。長い行は、打ち込むと切れる
 LINE_MAX = 79
-# 指数のE(4Bh)は、keytype.normalizeが「[E]」などをまとめた1字(keytype.EXP)で届く
-_CODES = {ch: c for c, ch in CHARS.items() if len(ch) == 1} | {"\ue04b": 0x4B}
+# 指数のE(4Bh)は、keytype.normalizeが「[E]」をまとめた1字「€」(keytype.EXP)で届く
+_CODES = {ch: c for c, ch in CHARS.items() if len(ch) == 1} | {"€": 0x4B}
 
 
 def _keyword_list(keywords: dict[int, str]) -> list[tuple[str, int]]:

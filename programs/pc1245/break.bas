@@ -1,10 +1,12 @@
 # title: ブロック崩し(マシン語)
+# norom: ROMなしでは難しさを聞かずにEASYで始める(C5DF番地を00にしてから実行するとNORMAL)。
+# norom: ↑↓でパドル、SPACEで打ち出す。得点は終わったあとC5F6〜C5FA番地に1桁ずつ残る
 # 同じ名前のbreak.hexを先に書き込み、CALL &C100で遊ぶ。↑↓でパドル、SPACEで打ち出す
 # 1(easy)はパドル3段で遅め、2(normal)はパドル2段。C5DF番地に書いてから呼ぶ
 # 得点は遊んでいるあいだは出ない。終わったあとC5F6〜C5FA番地に1桁ずつ残っている
 10 D=2:G=0:H=0
 20 INPUT "1EASY 2NORMAL?";D
-30 POKE &C5DF,0:IF D=1 POKE &C5DF,1
+30 POKE &C5DF,1:IF D<>1 POKE &C5DF,0
 40 WAIT 64:PRINT "SIDE BREAK"
 50 CALL &C100
 60 S=PEEK &C5F6*10000+PEEK &C5F7*1000+PEEK &C5F8*100+PEEK &C5F9*10

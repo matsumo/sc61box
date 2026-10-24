@@ -9,6 +9,7 @@ uv run pc1251 --load dump.txt # 16進ダンプをRAMへ書き込む
 uv run pc1251 primes --run    # 置き場所のprimes.basを読み込んで実行する
 """
 
+import json
 import os
 import re
 import subprocess
@@ -21,7 +22,7 @@ from typing import Any
 import pygame
 import typer
 
-from . import audio, basictext, display, keytype, lcdtext, programs, recorder, tape
+from . import audio, basictext, display, keytype, lcdtext, programs, recorder, tape, workbench
 from .audio import RATE, Buzzer, speed_adjust
 from .autotype import Typer
 from .keytype import keys_for, keys_for_program
@@ -44,24 +45,38 @@ from .overlay import (
 
 FPS = 30
 RUSH = 8  # パソコンのキーをROMの入力待ちに届けるあいだの速さ(Typer.rushing)
-STATE_DIR = os.path.expanduser("~/.pc1251")
-RAM_FILE = os.path.join(STATE_DIR, "ram.bin")
+STATE_DIR = os.path.expanduser("~/.pc1251")  # RAM、状態、作業欄の見え方などを置くところ
 
 
 UNDO_HINT = "メニューの「読み込む前に戻す」で元に戻せます"
 
 
-def ram_file(model: str = "1251", card: int = 0) -> str:
-    """終了時にRAMを保存するファイル。RAMの大きさが違うので機種(とRAMカード)ごとに分ける"""
+def ram_file(model: str = "1251", card: int = 0, norom: bool = False) -> str:
+    """終了時にRAMを保存するファイル。RAMの大きさが違うので機種(とRAMカード)ごとに分ける。
+    ROMなしで動かしたときのRAMは、ROMで動かしたときのRAMと混ざらないように別にする"""
     if card:
         model = f"{model}-{card}k"
-    return RAM_FILE if model == "1251" else os.path.join(STATE_DIR, f"ram-{model}.bin")
+    if norom:
+        return os.path.join(STATE_DIR, f"ram-{model}-norom.bin")
+    name = "ram.bin" if model == "1251" else f"ram-{model}.bin"
+    return os.path.join(STATE_DIR, name)
 
 
-def state_file(model: str = "1251", card: int = 0) -> str:
-    """どこでもセーブの保存先(機種とRAMカードごとに1つ)"""
+def bench_file(ram: str) -> str:
+    """終了したときに、RAMと一緒に作業欄の情報(開始番地、止める所、書いた範囲)を保存する
+    ファイル"""
+    return os.path.splitext(ram)[0] + "-bench.json"
+
+
+def view_file() -> str:
+    """作業欄の見え方(内部RAMを開いておくか)を覚えておくファイル"""
+    return os.path.join(STATE_DIR, "bench-view.json")
+
+
+def state_file(model: str = "1251", card: int = 0, norom: bool = False) -> str:
+    """どこでもセーブの保存先(機種とRAMカードごとに1つ。ROMなしは別)"""
     name = f"{model}-{card}k" if card else model
-    return os.path.join(STATE_DIR, f"state-{name}.json")
+    return os.path.join(STATE_DIR, f"state-{name}{'-norom' if norom else ''}.json")
 
 
 # そのまま押しっぱなしで伝えるキー
@@ -113,6 +128,17 @@ HELP = [
     f"F1〜F4・{CMD}↑↓: モードスイッチ   F5・{CMD}R: 裏のRESETボタン",
     f"{CMD}K: 矢印キーを数字キーの8・2・4・6にする・戻す(テンキーの代わり)",
     "エミュレータの操作は下の操作欄のメニューから(ショートカットはメニューに出ます)",
+]
+
+HELP_NOROM = [
+    "ROMなしの作業欄(右)",
+    "0〜9・A〜F: ダンプを書く   Enter: 次の行   Space: 番地からバイトへ   Tab: 番地を打ち直す",
+    f"{CMD}G: 実行・続ける   {SHIFT}{CMD}G: カーソルから実行   {CMD}.: 一時停止   Esc: 編集に戻る",
+    f"{CMD}J: 次の1命令だけ実行   {SHIFT}{CMD}J: CALLの呼び先を戻るまで実行   {CMD}B: 止める所",
+    f"{CMD}V: 本のダンプリストや.hexを貼り付け",
+    f"PageUp・PageDown: 1画面   Home・End({CMD}←→): 行の頭・終わり   {CMD}↑↓: 開始番地・終わり",
+    f"{CMD}E: 開始番地からを.hexに書き出す   {CMD}O: プログラムの一覧(.hexのマシン語だけを使う)",
+    "実行中のキーは本体へ(Tab: SHIFT  Option: DEF  Delete: CL  Esc: BRK)",
 ]
 
 HELP_1350 = [
@@ -206,14 +232,31 @@ class App:
         card = getattr(args, "card", 0) or 0
         if MODELS[model].family != "1350":
             card = 0
-        # ROMがなければここで止まる(窓を開く前に)
+        # ROMがなければ、ROMなしで動かしてマシン語の作業欄を出す(PC-1350はROMなしでは
+        # 動かせないので、ここで止まる)
         overseas = bool(getattr(args, "overseas", False))
-        self.m = new_machine(model, card, overseas)
+        norom = bool(getattr(args, "norom", False))
+        if not norom:
+            try:
+                self.m = new_machine(model, card, overseas)
+            except RomNotFound:
+                if MODELS[model].family == "1350":
+                    raise
+                norom = True
+        if norom:
+            self.m = new_machine(model, rom=False)
         self.is1350 = self.m.model.family == "1350"
+        self.norom = norom  # ROMなしで動かしているか
+        # マシン語の作業欄。ROMなしではいつも右に出し、ROMがあればメニューで出し入れする
+        self.bench = workbench.Bench(self.m)
         pygame.init()
+        self.bench_view = workbench.BenchView(self.bench, load_help_font(15), CMD, SHIFT)
+        self.pane_open = norom or self._view_pref("show_pane") is True
         pygame.display.set_caption(f"SHARP {self.m.model.title}")
         self.out_w, self.out_h = display.out_size(model)
-        self.scale = self._fit(args.scale, self.out_w, self.out_h + BAR_H)
+        pane = workbench.PANE_W if self.pane_open else 0
+        self.want_scale = args.scale  # 指定された拡大率(画面に入らなければ、これより縮める)
+        self.scale = self._fit(args.scale, self.out_w, self.out_h + BAR_H, pane)
         self.body_size = (int(self.out_w * self.scale), int(self.out_h * self.scale))
         self.font: pygame.font.Font | None = None
         # プリンタはいつもつないでおき、印字したときだけ紙を出す
@@ -227,15 +270,17 @@ class App:
         self.print_start = 0  # この紙の最初の行(printer.linesの番号)
         self.print_saved = 0  # 保存したときの行の数
         self.print_time = 0.0  # 最後に印字した時刻
+        self.bench_view.show_iram = self._iram_shown()
         self.window = pygame.display.set_mode(self._window_size())
         self.bar = Bar([])
         self.rec_paused = False  # 録画を一時停止しているか
         self.panel = display.Panel(model)
         self.panel.set_fps(FPS, args.persist)
         self.sw_stops = self.panel.switch_stops  # スイッチの段(上から)と、その中心のy
-        self.ram_file = ram_file(model, card)
-        self.state_file = state_file(model, card)
+        self.ram_file = ram_file(model, card, norom)
+        self.state_file = state_file(model, card, norom)
         self.typer = Typer(self.m, self.set_mode)
+        self.typer.on_write = self.write_dump
         self.fast = False  # 読み込み中は時計に合わせず全速で動かす
         self.menu: ProgramMenu | None = None
         self.status = ""  # 画面の下に出す知らせ
@@ -246,7 +291,7 @@ class App:
         self.undo_state: dict | None = None  # 最後にプログラムを読み込む直前の状態
         self.undo_title = ""
         self.undo_prog: tuple = (None, "", "")  # 読み込む直前の(last_prog, loading, load_help)
-        self.halted = False  # 実行を一時停止している
+        self.undo_bench: dict | None = None  # 読み込む直前の作業欄
         self.load_total = 1
         self.load_typing = False  # 打ち込みで入れているところか(進み具合の表示用)
         self.popup: Popup | None = None  # 右クリックのメニュー
@@ -261,11 +306,17 @@ class App:
         self.numpad_arrows = bool(getattr(args, "numpad", False))
         self.dragging_switch = False
         self.mouse_key: str | None = None
+        self.brk_by: set[str] = set()  # BRKキーを押している入力元(EscキーとマウスでBRK)
         self.help = 0  # キーの説明を出しておく残りのフレーム
-        self.say(f"操作は下の操作欄のボタンから。キーの説明は{CMD}/", 8)
+        if self.norom:
+            self.say("ROMがないので、ROMなしでマシン語だけを動かします(右の作業欄)", 8)
+        else:
+            self.say(f"操作は下の操作欄のボタンから。キーの説明は{CMD}/", 8)
         self.save_ram = not args.fresh
         if self.save_ram and self.m.load_ram(self.ram_file):
             self.m.cpu.reset()
+            self.bench.prev_regs = bytes(self.m.cpu.ram)
+            self._load_bench_info()
         self.load = args.load
         self.boot_frames = FPS  # 起動してから貼り付けを始めるまで
         if args.type:
@@ -282,15 +333,19 @@ class App:
                 raise FileNotFoundError(f"{args.program}が見つかりません")
             self.pending = (prog, args.run)
         pygame.key.set_repeat()
+        self.repeating = False  # pygameのキーのリピートを使っているか(_key_repeat)
         pygame.key.start_text_input()
 
     @staticmethod
-    def _fit(scale: float, out_w: int = display.OUT_W, out_h: int = display.OUT_H) -> float:
+    def _fit(
+        scale: float, out_w: int = display.OUT_W, out_h: int = display.OUT_H, pane: int = 0
+    ) -> float:
+        """拡大率。画面に収まらなければ縮める(paneは右に足す作業欄の幅)"""
         try:
             dw, dh = pygame.display.get_desktop_sizes()[0]
         except (pygame.error, IndexError):
             return scale
-        room = min((dw - 80) / out_w, (dh - 120) / out_h)
+        room = min((dw - 80 - pane) / out_w, (dh - 120) / out_h)
         return min(scale, max(0.35, room))
 
     # ---- キー ----
@@ -304,6 +359,11 @@ class App:
             self.popup_key(ev)
             return
         if mods & (pygame.KMOD_META | pygame.KMOD_CTRL) and self.shortcut(ev.key, mods):
+            return
+        if self.pane_keys():
+            # キーを作業欄の打ち込みに使う(本体のキーには送らない)
+            if not mods & (pygame.KMOD_META | pygame.KMOD_CTRL):
+                self.bench_key(ev)
             return
         actions = {
             pygame.K_F6: self.open_menu,
@@ -319,7 +379,7 @@ class App:
             self.cancel_loading()
             return
         if ev.key == pygame.K_ESCAPE:
-            m.brk = True
+            self.press_brk("key")
             return
         if ev.key == pygame.K_F5:
             m.reset_key = True
@@ -348,7 +408,7 @@ class App:
         if name is None and not mods & pygame.KMOD_SHIFT:
             name = DIGITS.get(ev.key)  # Shift付きの数字キーは記号になる
         if name:
-            self.typer.press_live(name)
+            self.typer.press_live(name, ev.key)
 
     def key_name(self, key: int) -> str | None:
         """パソコンのキーを本体のキーの名前にする(数字キーを除く)"""
@@ -361,15 +421,15 @@ class App:
     def key_up(self, ev) -> None:
         m = self.m
         if ev.key == pygame.K_ESCAPE:
-            m.brk = False
+            self.release_brk("key")
         elif ev.key == pygame.K_F5:
             m.reset_key = False
         name = self.key_name(ev.key) or DIGITS.get(ev.key)
         if name:
-            self.typer.release_live(name)
+            self.typer.release_live(name, ev.key)
         if ev.key in NUMPAD_ARROWS:  # 押しているあいだにモードを切り替えたとき
-            self.typer.release_live(DIRECT[ev.key])
-            self.typer.release_live(NUMPAD_ARROWS[ev.key])
+            self.typer.release_live(DIRECT[ev.key], ev.key)
+            self.typer.release_live(NUMPAD_ARROWS[ev.key], ev.key)
 
     def text_input(self, text: str) -> None:
         menu = self.menu
@@ -381,6 +441,8 @@ class App:
             return
         if self.popup is not None:
             return
+        if self.pane_keys():
+            return  # 作業欄の打ち込みはKEYDOWNで受けている
         # KEYDOWNで押しっぱなしとして伝えた英数字と空白を除いて、まとめて打つ
         rest = "".join(ch for ch in text if not (ch.isascii() and (ch.isalnum() or ch == " ")))
         if rest:
@@ -390,6 +452,8 @@ class App:
     # Fキーはほかのアプリに取られることがあるので、同じ操作を⌘(Windows・LinuxはCtrl)との
     # 組み合わせと右クリックのメニューにも置く
     def shortcut(self, key: int, mods: int = 0) -> bool:
+        if (self.norom or self.pane_keys()) and self.bench_shortcut(key, mods):
+            return True
         actions = {
             pygame.K_o: self.open_menu,
             pygame.K_t: lambda: self.change_speed(-1 if mods & pygame.KMOD_SHIFT else 1),
@@ -401,6 +465,7 @@ class App:
             pygame.K_v: self.paste,
             pygame.K_SLASH: self.toggle_help,
             pygame.K_k: self.toggle_arrows,
+            pygame.K_d: None if self.norom else self.toggle_pane,
             pygame.K_UP: lambda: self.move_switch(-1),
             pygame.K_DOWN: lambda: self.move_switch(1),
         }
@@ -409,6 +474,245 @@ class App:
             return False
         act()
         return True
+
+    # ---- マシン語の作業欄(ROMなし) ----
+    def bench_shortcut(self, key: int, mods: int) -> bool:
+        """作業欄の⌘(Ctrl)のショートカット。扱ったらTrue"""
+        shift = bool(mods & pygame.KMOD_SHIFT)
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        if b.state != "run" or b.rom:
+            # ⌘↑↓(Ctrl+Home・End)で開始番地と書いた所の終わりへ、⌘←→で行の頭と終わりへ
+            moves = {
+                pygame.K_UP: lambda: b.go(b.start, v.rows),
+                pygame.K_HOME: lambda: b.go(b.start, v.rows),
+                pygame.K_DOWN: lambda: b.go_end(v.rows),
+                pygame.K_END: lambda: b.go_end(v.rows),
+                pygame.K_LEFT: b.row_home,
+                pygame.K_RIGHT: b.row_end,
+            }
+            if key in moves:
+                moves[key]()
+                return True
+        actions = {
+            pygame.K_g: lambda: self.bench_do("runcursor" if shift else "go"),
+            pygame.K_PERIOD: lambda: self.bench_do("pause"),
+            pygame.K_j: lambda: self.bench_do("over" if shift else "step"),
+            pygame.K_b: lambda: self.bench_do("break"),
+            pygame.K_v: self.bench_paste,
+            pygame.K_e: self.bench_export,
+        }
+        act = actions.get(key)
+        if act is None:
+            return False
+        act()
+        return True
+
+    def bench_do(self, what: str) -> None:
+        """作業欄のボタンとショートカットの操作"""
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        if what == "go":
+            what = "resume" if b.state == "pause" else "run"
+        if what in ("run", "runcursor") and (b.state == "run" or b.rom):
+            return  # ROMのある本体では、マシン語はBASICのCALLで呼ぶ
+        self.release_all()
+        if what == "run":
+            b.run()
+        elif what == "runcursor":
+            b.start = b.cursor
+            b.run()
+        elif what == "resume":
+            b.resume()
+        elif what == "pause":
+            b.pause()
+        elif what == "step":
+            b.step()
+        elif what == "over":
+            b.step_over()
+        elif what == "abandon":
+            b.abandon()
+        elif what == "break":
+            a = b.ins_at(b.cursor)
+            on = b.toggle_break(a)
+            if on is None:
+                v.say(f"{a:04X}番地はROMなしでは使えないので、止める所を置けません", 3)
+            else:
+                v.say(f"{a:04X}番地の止める所を" + ("置きました" if on else "外しました"), 2)
+        self.overshoot = 0
+
+    def bench_key(self, ev) -> None:
+        """実行していないときのキー。16進表記の字でダンプを書き、矢印で動く"""
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        k = ev.key
+        if k == pygame.K_ESCAPE:
+            if b.rom:  # キーを本体へ戻す
+                v.focus = False
+            elif b.state == "pause":
+                b.abandon()
+            return
+        ch = (ev.unicode or "").upper()
+        msg = ""
+        if len(ch) == 1 and ch in "0123456789ABCDEF":
+            msg = b.type_hex(int(ch, 16))
+        elif k in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            b.next_line()
+        elif k == pygame.K_SPACE:
+            b.to_data()
+        elif k in (pygame.K_LEFT, pygame.K_BACKSPACE):
+            b.left()
+        elif k == pygame.K_RIGHT:
+            b.right()
+        elif k in (pygame.K_UP, pygame.K_DOWN):
+            b.move_rows(-1 if k == pygame.K_UP else 1, v.rows)
+        elif k in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
+            b.page(-1 if k == pygame.K_PAGEUP else 1, v.rows)
+        elif k == pygame.K_TAB:
+            b.to_addr()
+        elif k == pygame.K_HOME:
+            b.row_home()
+        elif k == pygame.K_END:
+            b.row_end()
+        if msg:
+            v.say(msg)
+
+    REPEAT = (350, 40)  # 作業欄のキーのリピート(押してから始まるまで、間隔。ミリ秒)
+
+    def _key_repeat(self) -> None:
+        """作業欄にキーを打っているあいだだけ、押し続けたキーをリピートさせる。本体に
+        キーを送るとき(ROMで動かしているとき、ROMなしで実行中のとき)は、押したままの
+        キーをそのまま伝えるのでリピートしない"""
+        want = self.pane_keys() and self.menu is None
+        if want != self.repeating:
+            if want:
+                pygame.key.set_repeat(*self.REPEAT)
+            else:
+                pygame.key.set_repeat()
+            self.repeating = want
+
+    def bench_click(self, pos) -> None:
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        hit = v.hit(pos)
+        if hit is None:
+            return
+        kind, a = hit
+        if kind == "button":
+            self.bench_do(v.buttons[a].action)
+        elif kind == "clearlcd":
+            b.clear_lcd = not b.clear_lcd
+        elif kind == "export":
+            self.bench_export()
+        elif kind == "iram":
+            v.show_iram = not v.show_iram
+            self._save_view()
+            self.window = pygame.display.set_mode(self._window_size())
+        elif kind == "break":
+            if b.toggle_break(a) is None:
+                v.say(f"{a:04X}番地はROMなしでは使えないので、止める所を置けません", 3)
+        elif kind in ("addr", "byte", "goto") and (b.state != "run" or b.rom):
+            first = (b.row - 8 * b.top_rows) & 0xFFFF
+            off = (a - first) & 0xFFFF
+            if kind == "addr":
+                b.row, b.top_rows, b.field, b.nib = a, off // 8, "addr", 0
+            else:
+                b.place(a, v.rows)  # バイトか逆アセンブルの行。行の並びは変えない
+
+    def bench_open(self, prog: programs.Program, run: bool = False) -> None:
+        """ROMなしでプログラムを読み込む。マシン語のダンプをRAMに書き、BASICは実行しない。
+        呼び出し用のBASICから、数だけを書くPOKE(IFのあとを除く)を拾って書き、最後のCALLの
+        番地を開始番地にする(CALLがなければ最初のダンプの番地)"""
+        b, m = self.bench, self.m
+        assert b is not None
+        name = prog.title or prog.name
+        if prog.errors:
+            self.say(f"{name}を読み込みません。{prog.errors[0]}", 8)
+            return
+        pokes, start = workbench.basic_hints(f"{prog.basic}\n{prog.run}")
+        blocks = prog.blocks + pokes + prog.after
+        if not prog.norom_ok:
+            why = "BASICとROMのルーチンを使う" if prog.blocks else "BASICの"
+            self.say(f"{name}は{why}プログラムなので、ROMなしでは使えません", 6)
+            return
+        outside = [a for at, data in blocks for a in range(at, at + len(data)) if not m.writable(a)]
+        if outside:
+            self.say(f"{name}を読み込みません。{outside[0]:04X}番地はRAMの外です", 8)
+            return
+        self.undo_bench = b.save()  # 実行中・一時停止中なら、その状態のまま覚える
+        if b.state != "edit":
+            b.abandon()
+        self.undo_state, self.undo_title = m.snapshot(), name
+        self.undo_prog = (self.last_prog, self.loading, self.load_help)
+        n = b.load_blocks(blocks, start)
+        self.last_prog = prog
+        self.loading, self.load_help = prog.title, prog.norom
+        done = f"{name}を読み込みました({n}バイト、開始番地{b.start:04X})。{CMD}Gで実行"
+        self.say(f"{done}\n{prog.norom}" if prog.norom else done, 12 if prog.norom else 6)
+        if run:
+            self.bench_do("run")
+
+    def bench_paste(self) -> None:
+        """クリップボードのダンプ(本のダンプリストか.hexの行)を書く"""
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        if b.state == "run" and not b.rom:
+            return
+        res = b.paste(self.clipboard())
+        if not res.written:
+            v.say("貼り付けた文字にダンプの行がありません", 4)
+            return
+        msg = f"{res.written}バイトを書きました"
+        if res.bad_sums:
+            where = "、".join(f"{a:04X}" for a in res.bad_sums[:4])
+            msg += f"。チェックサムが合わない行: {where}"
+        if res.outside:
+            msg += f"。RAMの外の{res.outside}バイトは書けません"
+        v.say(msg, 8)
+
+    def bench_export(self) -> None:
+        """開始番地からのマシン語を、置き場所に.hex(逆アセンブルつき)で書き出す"""
+        b, v = self.bench, self.bench_view
+        assert b is not None and v is not None
+        ranges = b.export_ranges()
+        if not ranges:
+            v.say("書き出すダンプがありません", 4)
+            return
+        where = "、".join(f"{lo:04X}〜{hi - 1:04X}" for lo, hi in ranges)
+        try:
+            folder = os.path.join(programs.user_dir(), programs.model_dir(self.m.model.name))
+            os.makedirs(folder, exist_ok=True)
+            path = _unused(folder, f"dump-{time.strftime('%Y%m%d-%H%M%S')}", ".hex")
+            # 開始番地は# run:に書く(読み込むと、ROMなしではここから、ROMがあればこのCALLで動く)
+            head = f"; {where}(マシン語の作業欄から書き出し)\n# run: CALL &{b.start:04X}\n"
+            body = "".join(b.dump_text(lo, hi) for lo, hi in ranges)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(head + body)
+        except OSError as e:
+            v.say(f"書き出せません: {e}", 5)
+            return
+        # 範囲は作業欄と.hexの頭に出ているので、知らせはファイルの名前と結果を先に、置き場所を
+        # あとに書く(作業欄の下の知らせは2行まで)
+        size = sum(hi - lo for lo, hi in ranges)
+        name = os.path.basename(path)
+        v.say(f"{name}を書き出しました({size}バイト)。置き場所: {_short(folder)}", 8)
+
+    def clipboard(self) -> str:
+        text = ""
+        try:
+            if not pygame.scrap.get_init():
+                pygame.scrap.init()
+            raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+            if raw:
+                text = raw.decode("utf-8", "ignore").rstrip("\x00")
+        except (pygame.error, NotImplementedError):
+            pass
+        if not text:
+            try:
+                text = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+            except OSError:
+                text = ""
+        return text
 
     SPEEDS = (0.5, 1, 2, 4, 8)
 
@@ -434,7 +738,10 @@ class App:
         w, h = self.body_size
         if self.paper_open:
             h += self.paper.height
-        return w, h + BAR_H
+        h += BAR_H
+        if self.pane_open:
+            return w + workbench.PANE_W, max(h, self.bench_view.min_height())
+        return w, h
 
     def bar_buttons(self) -> list[BarButton]:
         """操作欄のボタン。左に目的ごとのメニュー、続けて実行の一時停止と速さ、右端に録画。
@@ -453,7 +760,9 @@ class App:
             BarButton("表示・入力", menu("view"), short="表示", menu="view",
                       tip=f"キーの説明({CMD}/)、矢印キーの割り当て、画面の画像、印字"),
         ]  # fmt: skip
-        if self.halted:
+        if self.norom:
+            pass  # ROMなしでは、実行と一時停止は作業欄のボタンで行う
+        elif self.halted:
             tip = f"止めている実行を続ける({CMD}P)"
             buttons.append(BarButton("実行を再開", self.toggle_halt, "play", "再開", tip))
         else:
@@ -526,9 +835,13 @@ class App:
             if started:  # 新しい紙。ほかの紙のファイルと重ならない名前にする
                 self.print_start = len(printer.lines) - new
                 self.print_saved = 0
-                self.print_file = _unused(
-                    programs.user_dir(), f"print-{time.strftime('%Y%m%d-%H%M%S')}", ".png"
-                )
+                try:
+                    self.print_file = _unused(
+                        programs.user_dir(), f"print-{time.strftime('%Y%m%d-%H%M%S')}", ".png"
+                    )
+                except OSError as e:  # 紙は出すが、印字の絵は保存しない
+                    self.print_file = None
+                    self.say(f"印字を保存できません: {e}", 5)
                 self.show_paper(True)
             self.paper_back = 0
             self.paper.fed(new)
@@ -571,7 +884,10 @@ class App:
         self.paper_back = min(max(self.paper_back + step, 0), max(0, rows - 1))
 
     def press_reset(self) -> None:
-        """裏のRESETボタンを0.3秒押す"""
+        """裏のRESETボタンを0.3秒押す。ROMなしでは、実行をやめて作業欄に戻る"""
+        if self.norom:
+            self.bench_do("abandon")
+            return
         self.m.reset_key = True
         self.reset_frames = max(1, FPS * 3 // 10)
 
@@ -586,13 +902,22 @@ class App:
         if kind is None:
             kind = self.popup.kind if self.popup is not None else "context"
         sep, item = SEPARATOR, MenuItem
-        pause = item("実行を再開する" if self.halted else "実行を一時停止する", f"{CMD}P",
+        stopped = self.bench.state == "pause"
+        pause = item("実行を再開する" if stopped else "実行を一時停止する", f"{CMD}P",
                      self.toggle_halt)  # fmt: skip
         if kind == "program":
+            # ROMなしでは、⌘E・⌘Vと同じく作業欄のダンプを書き出す・貼り付ける
+            if self.norom:
+                export = item("ダンプをファイル(.hex)に書き出す", f"{CMD}E", self.bench_export,
+                              self.bench.export_summary())  # fmt: skip
+                paste = item("クリップボードからダンプを貼り付ける", f"{CMD}V", self.bench_paste)
+            else:
+                export = item("プログラムをファイルに書き出す", f"{CMD}E", self.export_program)
+                paste = item("クリップボードから打ち込む", f"{CMD}V", self.paste)
             items = [
                 item("プログラムの一覧…", f"{CMD}O", self.open_menu),
-                item("プログラムをファイルに書き出す", f"{CMD}E", self.export_program),
-                item("クリップボードから打ち込む", f"{CMD}V", self.paste),
+                export,
+                paste,
                 item("置き場所のフォルダを開く", "", lambda: self.reveal(programs.user_dir())),
             ]
             if self.load_help:
@@ -620,6 +945,9 @@ class App:
                 sep,
                 item("画面を画像で保存", f"{CMD}S", self.screenshot),
             ]
+            if not self.norom:
+                pane = "マシン語の作業欄をしまう" if self.pane_open else "マシン語の作業欄を出す"
+                items[2:2] = [item(pane, f"{CMD}D", self.toggle_pane)]
             paper = self.popup_items("paper")
             return items + ([sep, *paper] if paper else [])
         if kind == "rec":
@@ -667,12 +995,30 @@ class App:
         return time.strftime("%m/%d %H:%M", time.localtime(t)).lstrip("0") + "に保存"
 
     def toggle_halt(self) -> None:
-        """実行を一時停止する。止めているあいだはCPUも時計も進まない(録画の一時停止とは別)"""
-        self.halted = not self.halted
-        if self.halted:
-            self.say(f"実行を一時停止しました。{CMD}Pか操作欄の「実行を再開」で続けます", 4)
+        """実行を一時停止する。止めているあいだはCPUも時計も進まない(録画の一時停止とは別)。
+        ROMなしでは、作業欄の一時停止と続けるにする(止めた状態を1つにする)"""
+        state = self.bench.state
+        if state == "run":
+            self.bench_do("pause")
+            if not self.norom:
+                self.say(f"実行を一時停止しました。{CMD}Pか操作欄の「実行を再開」で続けます", 4)
+        elif state == "pause":
+            self.bench_do("resume")
+            if not self.norom and self.bench.state == "run":
+                self.say("実行を再開しました", 1.5)
         else:
-            self.say("実行を再開しました", 1.5)
+            self.say(f"実行していません。{CMD}Gで開始番地から実行します", 3)
+
+    @property
+    def halted(self) -> bool:
+        """ROMのある本体で、実行を一時停止しているか(作業欄の一時停止と同じ状態)。ROMなしの
+        本体の実行と一時停止は作業欄が扱うので、いつもFalse"""
+        return not self.norom and self.bench.state == "pause"
+
+    @halted.setter
+    def halted(self, on: bool) -> None:
+        if not self.norom and on != self.halted:
+            self.toggle_halt()
 
     def undo_loading(self) -> None:
         """プログラムを読み込む直前の状態に戻す"""
@@ -686,6 +1032,7 @@ class App:
             return
         # 書き出しや説明に使う、読み込んだプログラムの情報も読み込む前のものに戻す
         self.last_prog, self.loading, self.load_help = self.undo_prog
+        self.bench.restore(self.undo_bench, f"{title}を読み込む前に戻しました")
         self.undo_state = None
         self._restored(f"{title}を読み込む前に戻しました")
 
@@ -741,6 +1088,11 @@ class App:
         if self.menu is not None:
             self.menu_click(pos)
             return
+        if self.pane_open and self.popup is None and pos[0] >= self.body_size[0]:
+            self.bench_view.focus = True  # ROMのある本体では、キーを作業欄で受ける
+            self.bench_click(pos)
+            return
+        self.bench_view.focus = False
         if self.popup is not None:
             popup = self.popup
             i = popup.hit(pos)
@@ -774,17 +1126,27 @@ class App:
             return
         self.mouse_key = name
         if name == "BRK":
-            self.m.brk = True
+            self.press_brk("mouse")
         else:
-            self.m.held.add(name)
+            self.typer.press_mouse(name)
+
+    def press_brk(self, source: str) -> None:
+        """BRKキーを押す。sourceはEscキー("key")か、本体の絵のBRKをマウスで("mouse")"""
+        self.brk_by.add(source)
+        self.m.brk = True
+
+    def release_brk(self, source: str) -> None:
+        """BRKキーを離す。もう一方の入力元でまだ押していれば、押したままにする"""
+        self.brk_by.discard(source)
+        self.m.brk = bool(self.brk_by)
 
     def mouse_up(self) -> None:
         self.dragging_switch = False
         name, self.mouse_key = self.mouse_key, None
         if name == "BRK":
-            self.m.brk = False
+            self.release_brk("mouse")
         elif name:
-            self.m.held.discard(name)
+            self.typer.release_mouse(name)
 
     def set_switch_from(self, y: float) -> None:
         mode = min(self.sw_stops, key=lambda s: abs(s[1] - y))[0]
@@ -812,6 +1174,9 @@ class App:
     def open_program(self, prog: programs.Program, run: bool = False) -> None:
         """ダンプをRAMに書き、BASICはPROモードでNEWしてから入れる。runなら実行の命令も打つ。
         読めない行があるときや、RAMの外に書くダンプがあるときは、何もせずに知らせる"""
+        if self.norom:
+            self.bench_open(prog, run)
+            return
         m = self.m
         if not prog.runs_on(m.model.name) and not prog.fits(m.writable):
             self.say(f"{prog.label(m.model.name)}なので、{m.model.title}では読み込みません", 5)
@@ -850,14 +1215,17 @@ class App:
             return
         self.undo_state, self.undo_title = m.snapshot(), prog.title or prog.name
         self.undo_prog = (self.last_prog, self.loading, self.load_help)
+        self.undo_bench = self.bench.save()
+        # 作業欄の開始番地は、呼び出し用のBASICの最後のCALLの番地(なければ最初のダンプの
+        # 番地)にする。書いた範囲は、ダンプを実際にRAMに書いたとき(write_dump)に覚える
+        _pokes, call = workbench.basic_hints(f"{prog.basic}\n{prog.run}")
+        self.bench.set_start(prog.blocks + prog.after, call)
         if self.is1350 and not m.power:
             self.set_mode("ON")
         elif not m.power:
             self.set_mode(m.mode if m.mode != "OFF" else "RUN")
         if not prog.setup:
-            for addr, data in prog.blocks:
-                for i, b in enumerate(data):
-                    m.write(addr + i, b)
+            self.write_dump(prog.blocks)
         back = m.mode if m.mode in ("RUN", "PRO") else "RUN"
         if self.is1350:
             back = "PRO" if "PRO" in m.symbols() else "RUN"
@@ -894,6 +1262,14 @@ class App:
                 self.say(prog.help, 20)
             else:
                 self.say(f"{prog.title}を読み込みました({prog.size}バイト)")
+
+    def write_dump(self, blocks: list[tuple[int, bytes]]) -> None:
+        """ダンプをRAMに書き、作業欄の書いた範囲(書き出しに使う)にも0のバイトを含めて入れる。
+        ダンプを書くところ(すぐ書く、# setup:のあと、# after:、--load)は、すべてここを通す"""
+        for addr, data in blocks:
+            for i, b in enumerate(data):
+                self.m.write(addr + i, b)
+        self.bench.note_written(blocks)
 
     def _encoded(self, text: str) -> bytes | None:
         """BASICを中間コードの行の並びにする。打ち込みで欠ける行があるなどで置けなければNone"""
@@ -1011,6 +1387,8 @@ class App:
     def open_menu(self) -> None:
         """プログラムの一覧を開く"""
         items = programs.scan()
+        if self.norom:  # ROMなしでは、ROMなしで使えるものだけ
+            items = [p for p in items if p.norom_ok]
         self.menu = ProgramMenu(programs.for_model(items, self.m.model.name, self.m.writable))
 
     def menu_key(self, ev) -> None:
@@ -1077,21 +1455,7 @@ class App:
             pass
 
     def paste(self) -> None:
-        text = ""
-        try:
-            if not pygame.scrap.get_init():
-                pygame.scrap.init()
-            raw = pygame.scrap.get(pygame.SCRAP_TEXT)
-            if raw:
-                text = raw.decode("utf-8", "ignore").rstrip("\x00")
-        except (pygame.error, NotImplementedError):
-            pass
-        if not text:
-            try:
-                text = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-            except OSError:
-                text = ""
-        self.typer.add_text(text)
+        self.typer.add_text(self.clipboard())
 
     def export_program(self) -> None:
         """RAMにあるBASICのプログラムを、置き場所に.basのファイルとして書き出す"""
@@ -1152,7 +1516,9 @@ class App:
         saved = None
         if prog is not None:
             saved = {k: getattr(prog, k) for k in self.PROG_TEXT + self.PROG_LISTS}
-        return {"program": saved, "loading": self.loading, "help": self.load_help}
+        info = {"program": saved, "loading": self.loading, "help": self.load_help}
+        info["bench"] = self.bench.save()
+        return info
 
     def _set_prog_info(self, info: dict | None) -> None:
         """_prog_infoで書いた情報に戻す。なければ、おかしければ、前に読み込んだプログラムの
@@ -1171,10 +1537,11 @@ class App:
         self.last_prog = prog
         self.loading = loading if isinstance(loading, str) else ""
         self.load_help = load_help if isinstance(load_help, str) else ""
+        self.bench.restore(info.get("bench"))
 
     def _restored(self, message: str) -> None:
         """状態を戻したあと、打ち込みの残りや音を捨てる"""
-        self.typer.clear()
+        self.typer.restored()
         self.fast = False
         self.overshoot = 0
         self.buzzer.hold(self.m.pc_out >> 4)
@@ -1183,12 +1550,16 @@ class App:
         self.say(message)
 
     def screenshot(self) -> None:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        n = 1
-        while os.path.exists(os.path.join(STATE_DIR, f"shot{n:03d}.png")):
-            n += 1
-        path = os.path.join(STATE_DIR, f"shot{n:03d}.png")
-        pygame.image.save(opaque(self.panel.out), path)
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            n = 1
+            while os.path.exists(os.path.join(STATE_DIR, f"shot{n:03d}.png")):
+                n += 1
+            path = os.path.join(STATE_DIR, f"shot{n:03d}.png")
+            pygame.image.save(opaque(self.panel.out), path)
+        except (OSError, pygame.error) as e:
+            self.say(f"画面の画像を保存できません: {e}", 5)
+            return
         self.say(f"{_short(path)}に保存しました")
 
     # ---- 録画 ----
@@ -1274,12 +1645,22 @@ class App:
             self.mouse_up()
         elif ev.type == pygame.MOUSEWHEEL and self.menu is not None:
             self.menu.scroll(-ev.y)
+        elif (
+            ev.type == pygame.MOUSEWHEEL
+            and self.pane_open
+            and self.pane_keys()
+            and pygame.mouse.get_pos()[0] >= self.body_size[0]
+        ):
+            self.bench.page(-ev.y, 1)  # 作業欄の上のホイールで、ダンプを1行ずつ動かす
         elif ev.type == pygame.MOUSEWHEEL and self.paper_open:
             self.scroll_paper(ev.y)
         elif ev.type == pygame.MOUSEMOTION and self.popup is not None:
             self.popup.sel = self.popup.hit(ev.pos)
         elif ev.type == pygame.MOUSEMOTION and not self.dragging_switch:
             self.bar.hover = self.bar.hit(ev.pos)
+            if self.pane_open:
+                hit = self.bench_view.hit(ev.pos)
+                self.bench_view.hover = hit[1] if hit and hit[0] == "button" else -1
         elif ev.type == pygame.MOUSEMOTION and self.dragging_switch:
             self.set_switch_from(ev.pos[1] / self.scale - display.MARGIN)
         elif ev.type == pygame.DROPFILE:
@@ -1293,20 +1674,22 @@ class App:
     def release_all(self) -> None:
         """パソコンのキーとマウスで押しているものを、すべて離す。ほかのウィンドウに移ると
         キーを離したことが届かないので、押したままにならないようにする"""
-        self.typer.physical.clear()
+        self.typer.release_physical()
         self.mouse_up()
+        self.brk_by.clear()
         self.m.brk = self.m.reset_key = False
 
     def frame(self) -> None:
         """1フレームぶん(1/FPS秒)動かして描く"""
         m = self.m
+        self._key_repeat()
         if not self.halted:
             self._count_down()
         typing = self.typer.scripted and not self.boot_frames
         speed = self.turbo * (8 if typing else 1)
         c0 = m.cpu.cycles
         m.sound_events.clear()
-        if self.halted:
+        if self.halted or (self.norom and self.bench.state != "run"):
             speed = 0
         elif self.fast and self.typer.busy and not self.boot_frames:
             # 読み込み中は時計に合わせず、1フレームの時間いっぱいまで回す
@@ -1314,7 +1697,9 @@ class App:
             end = time.perf_counter() + 0.8 / FPS
             while time.perf_counter() < end and self.typer.busy:
                 self.typer.step()
-                m.run(CLOCK // 200)
+                # 打ったCALLでマシン語が動き出せば、止める所で止まる(読み込みの途中でも)
+                if self._run_cpu(CLOCK // 200):
+                    break
         elif self.fast:
             self.fast = False
             if self.load_help:
@@ -1351,9 +1736,9 @@ class App:
         if self.boot_frames:
             self.boot_frames -= 1
             if self.boot_frames == 0 and self.load:
-                for addr, data in parse_hexdump(self.load):
-                    for i, b in enumerate(data):
-                        m.write(addr + i, b)
+                blocks = parse_hexdump(self.load)
+                self.write_dump(blocks)
+                self.bench.set_start(blocks)
             if self.boot_frames == 0 and self.pending:
                 prog, run = self.pending
                 self.open_program(prog, run)
@@ -1390,7 +1775,8 @@ class App:
                 self.typer.step()
                 rush = self.typer.rushing and bool(cycles)
             before = m.cpu.cycles
-            m.run(min(left, CLOCK // (1000 if rush else 200)))
+            if self._run_cpu(min(left, CLOCK // (1000 if rush else 200))):
+                break
             if rush:
                 # パソコンのキーをROMの入力待ちに届けているあいだは、RUSH倍の速さで回す
                 # (1打鍵ごとのROMの読み取りの待ちを縮めて、打ち込みのもたつきをなくす)
@@ -1404,6 +1790,31 @@ class App:
                 break
         else:
             self.overshoot = m.cpu.cycles - target
+
+    def _run_cpu(self, cycles: int) -> bool:
+        """CPUを最大cyclesサイクル動かす。作業欄の止める所、呼び出しの戻り先、ROMなしでは
+        RAMの外とROMのルーチンの代わりも、ここで調べる(本体を動かすところは、すべてここを
+        通す)。作業欄の実行が止まったらTrue"""
+        m, bench = self.m, self.bench
+        if bench.state == "run" and bench.pass_pc is not None:
+            # 再帰の内側の戻り先を、止めずに1命令だけ進める。終わらないプログラムでも、
+            # 1回に1命令ずつなので、フレームのサイクルを使い切れば画面に戻る
+            bench.pass_step()
+            stopped = bench.state != "run"
+        else:
+            guard = bench.guard() if bench.state == "run" and bench.needs_guard() else None
+            # 止まっても、ROMのルーチンの代わりを済ませただけなら(trapped)続ける
+            stopped = m.run(cycles, guard) and not bench.trapped()
+        if stopped:
+            self._bench_stopped()  # 終わったか、止める所かRAMの外で一時停止した
+        return stopped
+
+    def _bench_stopped(self) -> None:
+        """作業欄の実行が止まった(終わったか、止める所などで一時停止した)。押しているキーを
+        離す。ROMのある本体で作業欄をしまっていれば、止まった所を見せるために出す"""
+        self.release_all()
+        if not self.norom and self.bench.state == "pause":
+            self.toggle_pane(True)
 
     def _show(self, surf: pygame.Surface) -> None:
         """本体の絵を窓に貼り、一覧や知らせを重ねる"""
@@ -1426,34 +1837,133 @@ class App:
             self.paper.draw(out, top, rows[: len(rows) - self.paper_back], where)
             top += self.paper.height
         self.bar.buttons = self.bar_buttons()
-        self.bar.draw(out, font, top, self.bar_info())
+        left = out.subsurface((0, 0, w, out.get_height())) if self.pane_open else out
+        self.bar.draw(left, font, top, self.bar_info())
+        notice = body  # 知らせを出す場所
+        if self.pane_open:
+            # 作業欄は右に置き、本体と操作欄の下のあいたところに知らせを出す
+            below = top + BAR_H
+            if below < out.get_height():
+                out.fill((20, 21, 24), (0, below, w, out.get_height() - below))
+                notice = out.subsurface((0, below, w, out.get_height() - below))
+            pane = pygame.Rect(w, 0, workbench.PANE_W, out.get_height())
+            self.bench_view.draw(out, pane)
         if self.help:
             self.help -= 1
-            draw_help(out, font, HELP_1350 if self.is1350 else HELP)
+            lines = HELP_1350 if self.is1350 else HELP
+            draw_help(out, font, HELP_NOROM if self.norom else lines)
         if self.fast:
             done = min(1.0, max(0.0, 1 - len(self.typer.queue) / self.load_total))
             doing = "打ち込み中" if self.load_typing else "読み込み中"
             text = f"{self.loading}を{doing}… {int(done * 100)}%(Escでやめる)"
-            draw_status(body, font, text)
+            draw_status(notice, font, text)
         elif self.status and time.monotonic() < self.status_until:
-            draw_status(body, font, self.status)
+            draw_status(notice, font, self.status)
         if self.menu is not None:
             self.menu.draw(out, font, self.m.model.name, _short(programs.user_dir()))
         if self.popup is not None:
             self.popup.draw(out, font, self.popup_items(), self.popup_mark())
         if self.recorder is not None:
             draw_recording(out, font, self.recorder.seconds, self.rec_paused)
-        if self.halted:
+        if self.halted and not self.pane_open:  # 作業欄を出していれば、作業欄に出る
             draw_halted(out, font, f"実行を一時停止中({CMD}Pで再開)")
         pygame.display.flip()
+
+    @staticmethod
+    def _view_prefs() -> dict:
+        """作業欄の見え方の覚え(view_file)。なければ空"""
+        try:
+            with open(view_file(), encoding="utf-8") as f:
+                prefs = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return prefs if isinstance(prefs, dict) else {}
+
+    def _view_pref(self, key: str) -> object:
+        return self._view_prefs().get(key)
+
+    def _iram_shown(self) -> bool:
+        """作業欄の内部RAMを開いておくか。前に開いた・閉じたものがあればそれに従う。なければ
+        開いておくが、開いた作業欄が画面の高さに入らなければ閉じておく"""
+        shown = self._view_pref("show_iram")
+        if isinstance(shown, bool):
+            return shown
+        try:
+            _dw, dh = pygame.display.get_desktop_sizes()[0]
+        except (pygame.error, IndexError):
+            return True
+        return self.bench_view.min_height(True) <= dh - 120
+
+    def _save_view(self) -> None:
+        """作業欄の内部RAMを開いたか閉じたか、ROMのある本体で作業欄を出したかを覚えておく
+        (次に起動したときも同じにする)"""
+        prefs = self._view_prefs()
+        prefs["show_iram"] = self.bench_view.show_iram
+        if not self.norom:
+            prefs["show_pane"] = self.pane_open
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(view_file(), "w", encoding="utf-8") as f:
+                json.dump(prefs, f)
+        except OSError:
+            pass
+
+    def pane_keys(self) -> bool:
+        """パソコンのキーを、本体ではなく作業欄で受けるか。ROMなしでは実行していないあいだ。
+        ROMがあれば、作業欄を出していて、作業欄をクリックしたあとか一時停止しているあいだ"""
+        b = self.bench
+        if self.norom:
+            return b.state != "run"
+        return self.pane_open and (self.bench_view.focus or b.state == "pause")
+
+    def toggle_pane(self, on: bool | None = None) -> None:
+        """ROMのある本体で、マシン語の作業欄を出すかしまう(窓の幅が変わる)"""
+        if self.norom:
+            return
+        on = not self.pane_open if on is None else on
+        if on == self.pane_open:
+            return
+        self.pane_open = on
+        self.bench_view.focus = False
+        self.release_all()
+        self._save_view()
+        # 作業欄の幅も合わせて画面に入るように、本体の拡大率を決め直す(しまえば、指定された
+        # 拡大率まで戻る)
+        pane = workbench.PANE_W if on else 0
+        self.scale = self._fit(self.want_scale, self.out_w, self.out_h + BAR_H, pane)
+        self.body_size = (int(self.out_w * self.scale), int(self.out_h * self.scale))
+        self.window = pygame.display.set_mode(self._window_size())
+
+    def _load_bench_info(self) -> None:
+        """終了したときに保存した作業欄の情報を読む。なければ(前の版のRAM)、RAMの0でない
+        所を書いた範囲とする"""
+        b = self.bench
+        assert b is not None
+        try:
+            with open(bench_file(self.ram_file), encoding="utf-8") as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            info = None
+        if isinstance(info, dict):
+            info["state"] = "edit"  # CPUは起動し直しているので、続きからは動かせない
+            b.restore(info, "")
+        elif self.norom:  # ROMのある本体のRAMにはBASICなども入っているので、推し量らない
+            b.mark_nonzero()
 
     def close(self) -> None:
         self.save_printout()
         if self.save_ram:
-            if self.m.power:
+            if self.m.power and not self.norom:
                 self.m.power_off()
-            os.makedirs(STATE_DIR, exist_ok=True)
-            self.m.save_ram(self.ram_file)
+            # 作業欄の開始番地、止める所、書いた範囲も、RAMと一緒に覚えておく。保存できなくても
+            # (置き場所に同じ名前のファイルがあるなど)、録画の保存と後始末は続ける
+            try:
+                os.makedirs(STATE_DIR, exist_ok=True)
+                self.m.save_ram(self.ram_file)
+                with open(bench_file(self.ram_file), "w", encoding="utf-8") as f:
+                    json.dump({**self.bench.save(), "state": "edit"}, f)
+            except OSError as e:
+                print(f"RAMを保存できません: {e}", file=sys.stderr)
         if self.recorder is not None:
             self.toggle_recording()  # 録画中に閉じたら、そこまでを保存する
         if self.speaker is not None:
@@ -1517,6 +2027,9 @@ def main(
         None, "--tape", help="カセットの音(wav)をセットする。CLOAD・CLOAD Mで読み込める"
     ),
     state: str | None = typer.Option(None, help="保存した状態(⇧⌘Sで書いたもの)から始める"),
+    norom: bool = typer.Option(
+        False, "--norom", help="ROMを使わず、マシン語の作業欄で動かす(ROMがなければ自動でこうなる)"
+    ),
     version_: bool = typer.Option(
         False, "--version", callback=_show_version, is_eager=True, help="版を出して終わる"
     ),
@@ -1556,6 +2069,7 @@ def main(
         numpad=numpad,
         tape=tape_,
         state=state,
+        norom=norom,
     )
     try:
         App(args).run()

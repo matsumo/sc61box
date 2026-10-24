@@ -341,6 +341,103 @@ def test_held_key_repeats_at_real_speed(monkeypatch):
     assert abs(len(fast) - len(slow)) <= 2
 
 
+def _running(app):
+    """10 GOTO 10を動かし、ROMが入力待ちで止まっていない状態にする"""
+    app.typer.add_text("NEW\n")
+    app.set_mode("PRO")
+    app.typer.add_text("10 GOTO 10\n")
+    app.typer.add_mode("RUN")
+    app.typer.add_text("RUN\n")
+    while app.typer.busy:
+        app.frame()
+    for _ in range(20):
+        app.frame()
+    assert not app.m.halted
+
+
+@pytest.mark.parametrize("model", ["1251", "1261"])
+def test_keys_during_program_are_held_together(model):
+    """プログラムが動いているあいだのパソコンのキーは、押したときにすぐ押され、同時に押した
+    キーもそのまま伝わる(DEFを押したまま6や8を押すゲームのため)"""
+    m = (app := make_app(model=model)).m
+    _running(app)
+    app.typer.press_live("DEF")
+    assert "DEF" in m.held  # フレームを待たずに押されている
+    app.frame()
+    app.typer.press_live("6")
+    app.typer.press_live("8")
+    for _ in range(5):
+        app.frame()
+    assert {"DEF", "6", "8"} <= m.held
+    m.pb = 0x04  # DEFと8は同じストローブ(IBのビット2)で読める
+    assert m.in_a() & 0x12 == 0x12
+    app.typer.release_live("6")
+    app.frame()
+    assert "6" not in m.held and {"DEF", "8"} <= m.held
+    for name in ("DEF", "8"):
+        app.typer.release_live(name)
+    app.frame()
+    assert not m.held and not app.typer.busy
+    app.close()
+
+
+def test_short_tap_during_program_is_held_long_enough():
+    """プログラムが動いているあいだに短く押したキーも、LIVE_DOWNのあいだは押しておく"""
+    m = (app := make_app(model="1261")).m
+    _running(app)
+    app.typer.press_live("6")
+    app.typer.release_live("6")
+    assert "6" in m.held
+    start = m.cpu.cycles
+    while "6" in m.held:
+        app.frame()
+    assert m.cpu.cycles - start >= app.typer.LIVE_DOWN
+    app.close()
+
+
+def test_keys_after_restoring_state(tmp_path, monkeypatch):
+    """状態を戻したあとも、戻した本体に合わせてキーを届ける。プログラムが動いている状態に
+    戻せば同時押しがすぐ伝わり、入力待ちの状態に戻せば列に入る"""
+    m = (app := make_app(model="1261")).m
+    monkeypatch.setattr(app, "state_file", str(tmp_path / "state.json"))
+    app.save_state()  # 入力待ち
+    _running(app)
+    running = str(tmp_path / "running.json")
+    monkeypatch.setattr(app, "state_file", running)
+    app.save_state()
+    m.brk = True  # 止めて入力待ちのまましばらく待つ(サイクルが保存したときより先へ進む)
+    for _ in range(5):
+        app.frame()
+    m.brk = False
+    for _ in range(60):
+        app.frame()
+    assert m.halted
+    app.load_state()
+    for name in ("DEF", "6", "8"):
+        app.typer.press_live(name)
+    assert {"DEF", "6", "8"} <= m.held and not app.typer.queue
+    for name in ("DEF", "6", "8"):
+        app.typer.release_live(name)
+    for _ in range(5):
+        app.frame()
+    app.load_state(str(tmp_path / "state.json"))
+    assert m.halted
+    app.typer.press_live("A")
+    assert app.typer.queue and not app.typer.direct
+    app.close()
+
+
+def test_keys_at_prompt_are_still_queued():
+    """ROMが入力を待っているときのキーは、これまでどおり列に入れて1つずつ届ける"""
+    app = make_app(model="1261")
+    assert app.m.halted
+    app.typer.press_live("A")
+    app.typer.press_live("B")
+    assert [e[2:] for e in app.typer.queue] == [["A"], ["B"]]
+    assert not app.typer.direct
+    app.close()
+
+
 def test_keys_during_program_are_not_rushed():
     """プログラムが動いているあいだに押したキー(INKEY$などで読まれる)では速く回さない"""
     app = make_app()
@@ -411,4 +508,72 @@ def test_switch_menus_with_one_click():
                       (pygame.K_LEFT, "machine")):  # fmt: skip
         app.handle(ev(pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
         assert app.popup.kind == kind
+    app.close()
+
+
+def test_same_key_from_two_sources():
+    """同じ本体のキーを2つの入力元から押しているときは、片方を離しても押したまま。
+    ↑を8にしたときの↑と数字の8、パソコンのキーボードとマウス"""
+    m = (app := make_app()).m
+    _running(app)
+    app.toggle_arrows()
+    for key in (pygame.K_UP, pygame.K_8):
+        app.handle(ev(pygame.KEYDOWN, key=key, mod=0, unicode=""))
+    app.frame()
+    app.handle(ev(pygame.KEYUP, key=pygame.K_UP, mod=0, unicode=""))
+    for _ in range(3):
+        app.frame()
+    assert "8" in m.held and "8" in app.typer.physical
+    app.handle(ev(pygame.KEYUP, key=pygame.K_8, mod=0, unicode=""))
+    for _ in range(3):
+        app.frame()
+    assert "8" not in m.held
+    # キーボードの8を押したまま、本体の8をマウスで押して離す
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_8, mod=0, unicode=""))
+    app.typer.press_mouse("8")
+    app.frame()
+    app.typer.release_mouse("8")
+    for _ in range(3):
+        app.frame()
+    assert "8" in m.held
+    # マウスで押したまま、キーボードの8を押して離す
+    app.typer.press_mouse("8")
+    app.handle(ev(pygame.KEYUP, key=pygame.K_8, mod=0, unicode=""))
+    for _ in range(3):
+        app.frame()
+    assert "8" in m.held
+    app.typer.release_mouse("8")
+    app.frame()
+    assert "8" not in m.held
+    app.close()
+
+
+def test_brk_from_two_sources():
+    """BRKキーも、EscキーとマウスでBRKを押しているときは、片方を離しても押したまま"""
+    from pc1251emu import display
+
+    app = make_app()
+    m = app.m
+    x0, y0, x1, y1 = app.panel.key_rects["BRK"]
+    pos = (
+        int(((x0 + x1) / 2 + display.MARGIN) * app.scale),
+        int(((y0 + y1) / 2 + display.MARGIN) * app.scale),
+    )
+    esc_down = ev(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="")
+    esc_up = ev(pygame.KEYUP, key=pygame.K_ESCAPE, mod=0, unicode="")
+    mouse_down = ev(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)
+    mouse_up = ev(pygame.MOUSEBUTTONUP, button=1, pos=pos)
+    app.handle(esc_down)
+    app.handle(mouse_down)
+    assert app.mouse_key == "BRK"
+    app.handle(mouse_up)
+    assert m.brk
+    app.handle(esc_up)
+    assert not m.brk
+    app.handle(mouse_down)
+    app.handle(esc_down)
+    app.handle(esc_up)
+    assert m.brk
+    app.handle(mouse_up)
+    assert not m.brk
     app.close()

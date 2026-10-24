@@ -92,11 +92,11 @@ def test_full_line_by_inserting():
 
 
 def test_exponent_sign():
-    """指数のE(4Bh)は「[E]」か数のあとの小文字の「e」で書いて打ち込め、書き出すと「[E]」に戻る。
+    """指数のE(4Bh)は「[E]」か「€」で書いて打ち込め、書き出すと「[E]」に戻る。
     英字のE(55h)とは別の字で、指数として計算される"""
     from pc1251emu.basictext import program_lines, program_text
 
-    m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5e2\n40 PRINT A*1[E]8+B+C\n")
+    m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5€2\n40 PRINT A*1[E]8+B+C\n")
     lines = dict(program_lines(m.mem))
     assert lines[10] == bytes([0x51, 0x34, 0x41, 0x4B, 0x36, 0x48])
     assert lines[20] == bytes([0x52, 0x34, 0x4B, 0x43])

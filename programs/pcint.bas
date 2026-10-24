@@ -1,4 +1,5 @@
 # title: PC-インタープリタ(見本)
+# norom: off
 # model: 1251,1245
 # run: CALL &C300
 # PC-インタープリタの文法で書いたBASICの行。CALL &C300で実行する。

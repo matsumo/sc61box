@@ -81,7 +81,7 @@ A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Wind
 
 A `.bas` file is not typed: the emulator writes into RAM the same tokenized lines the ROM would make from typing (spaces dropped, keywords as one-byte codes), byte for byte, so even long programs load at once.
 
-- Write the exponent sign (typed with SHIFT+`+`, a different character from the letter E) as `[E]` or as a lower-case `e` right after a number, e.g. `1[E]-8` or `1e-8`. An upper-case `E` stays a letter (on the PC-1251, `2E-1` means 2×E−1).
+- Write the exponent sign (typed with SHIFT+`+`, a different character from the letter E) as `[E]` or `€`, e.g. `1[E]-8`. The letter `E` or `e` is not an exponent (on the PC-1251, `2E-1` means 2×E−1).
 - Write π (SHIFT+`0`) as `π`.
 - Only 79 characters fit on one input line, but on the real machine a longer line can still be entered by typing part of it, pressing `ENTER`, recalling the line and appending the rest (the edit field of a recalled line holds 79 characters including the line number, a stored keyword counting as one). A line longer than 79 characters is therefore stored as it is if it would go in this way without losing anything. If a line would lose part of it even this way, nothing is written and its line number is shown at the bottom of the window.
 
@@ -253,7 +253,7 @@ uv run pc1251 --model 1261 lc3-block --run   # compile a breakout game with the 
 
 The program list, export, shortcuts, DEF-key execution and cassette audio work as on the PC-1251. The differences:
 
-- The LCD has two lines of 24 characters. Short LCD bars light above the printed labels BUSY, PRINT, DEG, RAD and ERROR below the display, and SMALL, SHIFT and DEF sit at the left edge of the LCD; SMALL lights in katakana input mode (which segment lights on the real machine is an inference). The LCD has no segment for GRAD.
+- The LCD has two lines of 24 characters. Short LCD bars light above the printed labels BUSY, PRINT, DEG, RAD and ERROR below the display, and カナ (kana), SMALL, SHIFT and DEF sit at the left edge of the LCD from top to bottom. カナ lights in katakana input mode. SMALL marks lowercase input: after `POKE &203C,PEEK &203C AND &7F` in RUN mode, SHIFT+8 toggles lowercase instead of katakana and SMALL lights (turning the power off and on restores katakana). The LCD has no segment for GRAD.
 - The parentheses are SHIFT+1 and SHIFT+2, and ¥ is SHIFT+6. There is no Exp key, so write exponents with the letter E (`1E3`). Typing `(`, `)` or `¥` on the PC is converted to those key strokes.
 - SHIFT+8 (カナ) switches to katakana input. Each key then enters the kana printed at its lower right, and with SHIFT the one at its upper right; keys marked with a dot give small kana (ァ, ッ and so on) with SHIFT. Kana typed or pasted on the PC (full-width, half-width or hiragana) are entered by switching to kana input and back afterwards; voiced marks become ゛ (SHIFT+−) and ゜ (SHIFT++) after the kana.
 - RAM is 10 KB, with 9342 bytes free (`MEM`). The PC-1260 has 4 KB with 3198 bytes free.

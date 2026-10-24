@@ -337,24 +337,20 @@ def test_yen_and_backslash(model):
         assert text == '10 A$="¥1¥"\n'
 
 
-def test_small_e_is_exponent():
-    """数のあとの小文字のe(1e-8など)は指数のEにする。大文字のE、文字列とREMのあと、
-    変数の名前のあとのeは英字のまま"""
+def test_small_e_is_letter():
+    """小文字のeは、数のあとでも英字のまま(指数は[E]か€で書く。PC-1261などでは英小文字を
+    打てるので、指数とは決められない)"""
     from pc1251emu.keytype import EXP, normalize
 
-    assert normalize("10 A=1e-8:B=2.5e3:C=.5e+2") == f"10 A=1{EXP}-8:B=2.5{EXP}3:C=.5{EXP}+2"
-    assert normalize("10 A=2E-1") == "10 A=2E-1"  # PC-1251では2×E−1
-    assert normalize('10 PRINT "1e5";1e5') == f'10 PRINT "1e5";1{EXP}5'
-    assert normalize("10 REM 1e5") == "10 REM 1e5"
-    assert normalize("10 print e:next i:a=b1e2") == "10 print e:next i:a=b1e2"
+    assert normalize("10 A=1e-8:B=1[E]-8:C=1€-8") == f"10 A=1e-8:B=1{EXP}-8:C=1{EXP}-8"
 
 
 @pytest.mark.parametrize("model", ["1251", "1261", "1350"])
-def test_small_e_stores_like_exp(model):
-    """小文字のeで書いた指数は、[E]で書いたものと同じ中間コードになる"""
+def test_euro_stores_like_exp(model):
+    """€で書いた指数は、[E]で書いたものと同じ中間コードになる"""
     from pc1251emu import basictext, keytype
 
     m, _ = boot(model)
-    one = basictext.encode_program(keytype.typed_text("10 A=1e-8\n", model), m.mem)
+    one = basictext.encode_program(keytype.typed_text("10 A=1€-8\n", model), m.mem)
     two = basictext.encode_program(keytype.typed_text("10 A=1[E]-8\n", model), m.mem)
     assert one is not None and one == two

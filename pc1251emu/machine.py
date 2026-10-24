@@ -113,11 +113,14 @@ SYMBOLS = {
 
 
 # PC-1260/1261/1262の表示記号。GRAD(207Cのビット2)の記号は液晶にない。
-# SMALLは、ROMがカナの入力のときに立てるビットに当てた
+# SHIFT+8(内部ROMの11FD〜122A)は、203Cのビット7が1ならカナの入力(KANA)を、0なら英小文字の
+# 入力(SMALL)を切り替える。ビット7は電源を入れたときに1になり(1927、INBのビット3が0のとき)、
+# POKE &203C,PEEK &203C AND &7Fで0にすると英小文字を打てる
 SYMBOLS_1261 = {
     "BUSY": (0x203D, 0x01),
     "PRINT": (0x203D, 0x02),
-    "SMALL": (0x203D, 0x08),
+    "KANA": (0x203D, 0x08),
+    "SMALL": (0x203D, 0x10),
     "SHIFT": (0x203D, 0x20),
     "DEF": (0x203D, 0x40),
     "DEG": (0x207C, 0x01),
@@ -300,10 +303,19 @@ def read_rom(name: str) -> bytes:
     return data
 
 
-def new_machine(model: str = "1251", card: int = 0, overseas: bool = False) -> "PC1251":
-    """機種の本体を作る。cardとoverseasはPC-1350だけが使う"""
+def new_machine(
+    model: str = "1251", card: int = 0, overseas: bool = False, rom: bool = True
+) -> "PC1251":
+    """機種の本体を作る。cardとoverseasはPC-1350だけが使う。romがFalseなら、ROMを読まずに
+    ROMの番地を0で埋めた本体を作る(マシン語の作業欄で、ROMなしでマシン語だけを動かす。
+    PC-1350は液晶のつくりが違うので、ROMなしでは作れない)"""
     if MODELS[model].family == "1350":
+        if not rom:
+            raise ValueError("PC-1350はROMなしでは動かせません")
         return PC1350(model=model, card=card, overseas=overseas)
+    if not rom:
+        m = MODELS[model]
+        return PC1251(bytes(0x2000), bytes(m.bas_size), model=model)
     return PC1251(model=model)
 
 
@@ -321,6 +333,8 @@ class PC1251(Bus):
             raise ValueError("PC-1350はnew_machine()かPC1350で作る")
         self.mem = bytearray(0x10000)
         cpu_name, bas_name = self.model.roms
+        # ROMを読まずに作ったか(ROMの番地がすべて0)
+        self.norom = not any(cpu_rom or b"\x01") and not any(bas_rom or b"\x01")
         if cpu_rom is None:
             cpu_rom = read_rom(cpu_name)
         if bas_rom is None:
@@ -506,15 +520,17 @@ class PC1251(Bus):
         return t
 
     # ---- 実行 ----
-    def run(self, cycles: int) -> None:
-        """cyclesぶん動かし、2msごとにタイマを進める"""
+    def run(self, cycles: int, guard: bytearray | None = None) -> bool:
+        """cyclesぶん動かし、2msごとにタイマを進める。guardはSC61860.runと同じで、
+        その番地で止まったらTrueを返す"""
         cpu = self.cpu
+        cpu.trapped = False
         while cycles > 0:
             if not self.power:
                 if self.brk:
                     self.wake()
                 else:
-                    return
+                    return False
             chunk = min(cycles, TICK_2MS - self.t2)
             if self.halted and (self.held or self.brk or self.reset_key):
                 self.halted = False
@@ -522,17 +538,30 @@ class PC1251(Bus):
                 used = chunk
                 cpu.cycles += used
             else:
-                used = cpu.run(chunk)
-            self.t2 += used
+                used = cpu.run(chunk, guard)
             cycles -= used
-            if self.t2 >= TICK_2MS:
-                self.t2 -= TICK_2MS
-                self.t2ms = 1
-                self.t512cnt += 1
-                if self.t512cnt >= 256:
-                    self.t512cnt = 0
-                    self.t512 = 1
-                    self.halted = False
+            self._tick(used)
+            if cpu.trapped:
+                return True
+        return False
+
+    def _tick(self, used: int) -> None:
+        """タイマをusedサイクル進める(2msごとに印を立て、256回ごとに512msの印を立てる)"""
+        self.t2 += used
+        while self.t2 >= TICK_2MS:
+            self.t2 -= TICK_2MS
+            self.t2ms = 1
+            self.t512cnt += 1
+            if self.t512cnt >= 256:
+                self.t512cnt = 0
+                self.t512 = 1
+                self.halted = False
+
+    def pass_time(self, cycles: int) -> None:
+        """命令を実行せずに、cyclesサイクルぶん時間を進める(CPUのサイクルとタイマ)。
+        ROMなしでROMのルーチンの働きをまねたときに、そのルーチンにかかる時間として使う"""
+        self.cpu.cycles += cycles
+        self._tick(cycles)
 
     # ---- 液晶 ----
     def display_on(self) -> bool:
@@ -934,11 +963,11 @@ class PC1350(PC1251):
         m = self.mem
         return {name for name, (a, bit) in SYMBOLS_1350.items() if m[a] & bit}
 
-    def run(self, cycles: int) -> None:
+    def run(self, cycles: int, guard: bytearray | None = None) -> bool:
         if self.mode == "OFF":  # スイッチが切れているあいだはONキーでも入らない
             self.power = False
-            return
-        super().run(cycles)
+            return False
+        return super().run(cycles, guard)
 
     # ROMの電源を切る手続き。内部RAMの20hに5A、21h〜27hにA5の印を書いてから電源を切る
     OFF_ROUTINE = 0x04BF

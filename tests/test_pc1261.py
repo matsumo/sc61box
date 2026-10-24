@@ -75,7 +75,7 @@ def test_symbols():
     typ(m, t, "")
     t.add_keys([["SHIFT"], ["8"]])  # カナの入力
     typ(m, t, "")
-    assert "SMALL" in m.symbols()
+    assert "KANA" in m.symbols() and "SMALL" not in m.symbols()
     t.add_keys([["SHIFT"], ["8"]])
     typ(m, t, "RADIAN\n")
     assert m.symbols() == {"RAD"}
@@ -87,7 +87,7 @@ def test_kana_typing():
     m, t = boot()
     typ(m, t, '"ポケコン ガッコウ"\n')
     assert lines(m)[1] == "ﾎﾟｹｺﾝ ｶﾞｯｺｳ"
-    assert "SMALL" not in m.symbols()  # 打ち終わったらカナの入力から戻る
+    assert "KANA" not in m.symbols()  # 打ち終わったらカナの入力から戻る
 
 
 def test_program_export_and_save(tmp_path):
@@ -296,3 +296,25 @@ def test_lcd_ram_mirrors():
     m.write(0x2A47, 0x2A)
     assert m.mem[0x2005] == 0x55 and m.mem[0x2847] == 0x2A
     assert m.read(0x2105) == 0x55 and m.read(0x2F47) == 0x2A
+
+
+def test_lowercase_after_poke():
+    """203Cのビット7を0にすると、SHIFT+8がカナの代わりに英小文字の入力を切り替え、SMALLが
+    点く(電源を入れ直すと、SHIFT+8はカナの切り替えに戻る)"""
+    m, t = boot()
+    typ(m, t, "POKE &203C,PEEK &203C AND &7F\n")
+    t.add_keys([["SHIFT"], ["8"]])
+    assert typ(m, t, "ABC").startswith("abc")
+    assert "SMALL" in m.symbols() and "KANA" not in m.symbols()
+    t.add_keys([["SHIFT"], ["8"]])
+    typ(m, t, "\n")
+    m.mode = "OFF"
+    m.run(CLOCK)
+    m.mode = "RUN"
+    m.brk = True
+    m.run(CLOCK // 5)
+    m.brk = False
+    m.run(CLOCK)
+    t.add_keys([["SHIFT"], ["8"]])
+    typ(m, t, "")
+    assert "KANA" in m.symbols() and "SMALL" not in m.symbols()

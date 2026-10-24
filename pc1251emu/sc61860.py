@@ -101,6 +101,7 @@ class SC61860:
         # (PC-1261などは768kHz)では、命令のサイクル数をratio(分子, 分母)倍して足す
         self.ratio = ratio
         self._frac = 0
+        self.trapped = False  # runがguardの番地で止まったか
         self.reset()
         self._ops = [self._build(op) for op in range(256)]
 
@@ -191,13 +192,25 @@ class SC61860:
         self._frac -= q * den
         return q
 
-    def run(self, cycles: int) -> int:
+    def run(self, cycles: int, guard: bytearray | None = None) -> int:
         """cyclesぶん実行し、実際に進んだサイクル数を返す。ポートへの書き込みの時刻を
-        周辺がcyclesで読むので、cyclesは命令ごとに進める"""
+        周辺がcyclesで読むので、cyclesは命令ごとに進める。
+
+        guard(番地ごとのバイト列)を渡すと、命令を読む前にPCの番地を見て、0でなければ
+        その命令を実行せずに止まり、trappedをTrueにする(マシン語の作業欄の止める所)"""
         ops = self._ops
         fetch = self._fetch
         start = self.cycles
         end = start + cycles
+        self.trapped = False
+        if guard is not None:
+            ticks = self._ticks
+            while self.cycles < end:
+                if guard[self.pc]:
+                    self.trapped = True
+                    break
+                self.cycles += ticks(ops[fetch()]())
+            return self.cycles - start
         if self.ratio[0] == self.ratio[1]:
             while self.cycles < end:
                 self.cycles += ops[fetch()]()

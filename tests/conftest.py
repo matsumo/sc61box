@@ -33,12 +33,23 @@ NO_ROM_NEEDED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _own_state_dir(tmp_path_factory, monkeypatch):
+    """RAM、どこでもセーブ、作業欄の見え方などの置き場所と、プログラムの置き場所を、試験ごとに
+    空のフォルダにする(使う人の~/.pc1251にあるものに試験の結果が左右されず、試験がそこへ
+    書くこともない)"""
+    from pc1251emu import app
+
+    monkeypatch.setattr(app, "STATE_DIR", str(tmp_path_factory.mktemp("pc1251")))
+    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path_factory.mktemp("programs")))
+
+
 def pytest_collection_modifyitems(config, items):
     from test_basic import DUMP
 
     for item in items:
         if (
-            item.module.__name__ == "test_cpu"
+            item.module.__name__ in ("test_cpu", "test_workbench")
             or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
         ):
             continue
