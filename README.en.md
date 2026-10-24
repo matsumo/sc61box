@@ -2,7 +2,7 @@
 
 # SHARP PC-1251/PC-1245/PC-1261/PC-1350 emulator
 
-An emulator for four Sharp pocket computers: the PC-1251 (1982), the PC-1245 (1983), the PC-1261 and the PC-1350. It executes the SC61860 CPU one instruction at a time and runs the machine's own internal ROM and BASIC ROM, so BASIC programs and machine code both work. You can press the keys and move the mode switch with the mouse. You choose the model when starting; without an option it runs as the PC-1251 (for the PC-1250 and PC-1255, which share its ROM, see [Running as a PC-1250 or PC-1255](#running-as-a-pc-1250-or-pc-1255), for the PC-1245 see [Running as a PC-1245](#running-as-a-pc-1245), for the PC-1261 [Running as a PC-1261](#running-as-a-pc-1261), for the PC-1350 [Running as a PC-1350](#running-as-a-pc-1350)).
+An emulator for four Sharp pocket computers: the PC-1251 (1982), the PC-1245 (1983), the PC-1261 and the PC-1350. It executes the SC61860 CPU one instruction at a time and runs the machine's own internal ROM and BASIC ROM, so BASIC programs and machine code both work. You can press the keys and move the mode switch with the mouse. Even without a ROM you can type in and run machine code (see [Without a ROM](#without-a-rom)). You choose the model when starting; without an option it runs as the PC-1251 (for the PC-1250 and PC-1255, which share its ROM, see [Running as a PC-1250 or PC-1255](#running-as-a-pc-1250-or-pc-1255), for the PC-1245 see [Running as a PC-1245](#running-as-a-pc-1245), for the PC-1261 [Running as a PC-1261](#running-as-a-pc-1261), for the PC-1350 [Running as a PC-1350](#running-as-a-pc-1350)).
 
 ![Switching on a PC-1251 and starting the machine-code bouncing ball with CALL &C000](images/demo-1251.gif)
 
@@ -44,6 +44,12 @@ For example, if you cloned into `~/src`, the files are `~/src/pc1251-emulator/ro
 
 yagshi's page "[Extracting ROM Data](https://www.oit.ac.jp/rd/labs/kobayashi-lab/~yagshi/old_web/misc/pocketcom/extrom.html)" (in Japanese) describes how to do it on a PC-1251. For the PC-1245, "[SHARP PC-1245/50/51/55 の使い方](https://ht-deko.com/pc1245/)" (ht-deko.com, in Japanese) gives a procedure with BASIC listings that saves the internal ROM 1 KB at a time and the BASIC ROM 4 KB at a time with `CSAVE M`. ROMs come in different versions, so only the file sizes are checked. To keep the ROM elsewhere, set the environment variable `PC1251_ROM` to that folder.
 
+### Without a ROM
+
+The emulator also starts without a ROM (except as a PC-1350). It then runs the CPU, LCD, keys and sound without BASIC or the ROM routines and shows a machine-code workbench to the right of the machine. In the workbench you type in or paste a hex dump listing from a book or magazine, run it, set breakpoints or step one instruction at a time, and watch the registers and memory change. Typed-in code, or a `.hex` file you loaded and edited, can be exported to a `.hex` file. The bundled bouncing ball and Breakout also run without a ROM.
+
+If you have the ROM, `--norom` still starts without it. You can also keep running the ROM, open the workbench with Cmd+D (Ctrl+D) and step through machine code called from BASIC with `CALL`. The workbench is described in the user guide (the section 「マシン語の作業欄」).
+
 ## Running
 
 ```sh
@@ -51,6 +57,7 @@ uv run pc1251 --scale 0.8            # smaller window
 uv run pc1251 primes --run           # load the bundled primes.bas and run it
 uv run pc1251 ~/prog/game.bas        # load a file by path
 uv run pc1251 --fresh                # start without the saved RAM
+uv run pc1251 --norom                # run without the ROM, in the machine-code workbench
 uv run pc1251 --state ~/.pc1251/state-1251.json  # start from a state saved with Shift+Cmd+S
 uv run pc1251 --model 1255           # start as a PC-1255 (1250 also works)
 uv run pc1251 --model 1245           # start as a PC-1245
@@ -61,7 +68,7 @@ uv run pc1251 --help                 # list the options
 uv run pc1251 --version              # print the version (please include it in bug reports)
 ```
 
-On exit the RAM is saved to `~/.pc1251/ram.bin` (`ram-1245.bin` for the PC-1245, `ram-1261.bin` for the PC-1261, `ram-1350.bin` for the PC-1350) and restored at the next start.
+On exit the RAM is saved to `~/.pc1251/ram.bin` (`ram-1245.bin` for the PC-1245, `ram-1261.bin` for the PC-1261, `ram-1350.bin` for the PC-1350) and restored at the next start. Without a ROM it goes to a separate file such as `ram-1251-norom.bin`.
 
 ### Program files
 
@@ -75,7 +82,7 @@ Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form
 | `.hex` | hex dump, one `address data` line after another | written straight into RAM |
 | `.bin` | machine-code bytes only | written at the address given by a `# bin:` line in the `.bas` |
 
-A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not exported. `uv run pc1251 --export folder` exports from the saved RAM.
+A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with ".hexに書き出す". `uv run pc1251 --export folder` exports from the saved RAM.
 
 #### BASIC files (.bas)
 
@@ -105,6 +112,7 @@ Lines starting with `#` are comments, and can carry these settings.
 | `# bin: file address` | machine-code binary to write first, and its address (`# bin: code.bin &C300`) |
 | `# setup: commands` | commands typed in PRO mode after `NEW`, before the BASIC goes in. With this, the dumps are written after `NEW` and these commands |
 | `# after: file` | dump to write after the run text is typed. For a `.bin`, add the address: `# after: code.bin &C400` |
+| `# norom: note` | note shown when the program is loaded without a ROM. `# norom: off` keeps the program out of the list without a ROM |
 | `# model: models` | models it runs on (see [Where to put programs](#where-to-put-programs)) |
 
 - Addresses can be written as `&C300`, `0xC300` or `C300`.
@@ -139,7 +147,7 @@ One instruction per line; `label:`, `; comment`, `ORG`, `EQU`, `DB` and `IF`/`EL
 
 ### Keys
 
-Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space and the arrow keys on your own keyboard work as well. While a key is being delivered to the ROM waiting for input, the calculator runs eight times faster, so fast typing is neither dropped nor delayed (auto-repeat of a held key and keys pressed while a program runs keep the real speed).
+Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space and the arrow keys on your own keyboard work as well. While a key is being delivered to the ROM waiting for input, the calculator runs eight times faster, which reduces dropped keys and display lag when typing fast (auto-repeat of a held key and keys pressed while a program runs keep the real speed).
 
 | macOS | Windows | Machine |
 | --- | --- | --- |
@@ -153,7 +161,7 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+O | Ctrl+O | program list |
 | Cmd+R | Ctrl+R | the RESET button on the back |
 | Cmd+T, Shift+Cmd+T | Ctrl+T, Shift+Ctrl+T | faster / slower (½×, 1×, 2×, 4×, 8×; away from 1× the pitch of the sound changes too) |
-| Cmd+E | Ctrl+E | export the BASIC program in memory to a .bas file |
+| Cmd+E | Ctrl+E | export the BASIC program in memory to a .bas file (while keys go to the workbench, export its dump to a .hex file) |
 | Cmd+S | Ctrl+S | save a screenshot |
 | Shift+Cmd+S | Shift+Ctrl+S | save the state (save anywhere) |
 | Shift+Cmd+L | Shift+Ctrl+L | go back to the saved state |
@@ -161,8 +169,9 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Shift+Cmd+P | Shift+Ctrl+P | pause / resume recording |
 | Cmd+P | Ctrl+P | pause / resume execution (separate from pausing the recording) |
 | Cmd+/ | Ctrl+/ | key help |
-| Cmd+V | Ctrl+V | type the clipboard text in |
+| Cmd+V | Ctrl+V | type the clipboard text in (while keys go to the workbench, paste a dump into it) |
 | Cmd+K | Ctrl+K | make the arrow keys press 8, 2, 4, 6 on the keypad, or back |
+| Cmd+D | Ctrl+D | show or hide the machine-code workbench (with a ROM) |
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
 
@@ -170,7 +179,7 @@ The "● 録画" button at the right end of the bar or Shift+Cmd+R (Shift+Ctrl+R
 
 Shift+Cmd+S (Shift+Ctrl+S on Windows) saves the RAM, the CPU registers, ports, timers and switch to `~/.pc1251/state-<model>.json` (one per model), and Shift+Cmd+L goes back to it, for example in the middle of a game or to retake a recording. Start with `--state file` to begin from a saved state. Saving again keeps the previous state under the same name with `.bak` added. The export information of the last loaded program (title, `# run:`, `# help:`, dump directives and so on) is saved too and comes back with the state, even if the original file has been edited since. The item "保存した状態に戻す" in the "本体" menu shows when the state was saved. The tape position and text still being typed from a file are not saved.
 
-Below the calculator is a bar. The buttons "プログラム" (list, export, paste), "本体" (save and restore the state, undo loading, switch, RESET), and "表示・入力" (key help, arrow keys, screenshot, printout) each open a short menu just above the button. With a menu open, clicking another button of the bar does that button's action, and ← → move to the neighbouring menu. Actions in the menus are not repeated as separate buttons. "実行を一時停止" pauses execution (it turns into "実行を再開"), and "速さ" shows the current speed and lets you pick one. The "● 録画" button at the right end handles everything about recording. Hovering over a button shows what it does and its shortcut. Right-click opens a short menu with pausing execution, the program list, screenshot and key help (on the paper, the paper actions). The right end of the bar shows the model, the last loaded program and any setting that differs from the default (arrows as number keys, tape). Turn off Japanese input before typing.
+Below the calculator is a bar. The buttons "プログラム" (list, export, paste), "本体" (save and restore the state, undo loading, switch, RESET), and "表示・入力" (key help, arrow keys, screenshot, printout) each open a short menu just above the button. With a menu open, clicking another button of the bar does that button's action, and ← → move to the neighbouring menu. "実行を一時停止" pauses execution (it turns into "実行を再開"), and "速さ" shows the current speed and lets you pick one. The "● 録画" button at the right end starts, pauses and stops recording. Hovering over a button shows what it does and its shortcut. Right-click opens a short menu with pausing execution, the program list, screenshot and key help (on the paper, the paper actions). The right end of the bar shows the model, the last loaded program and any setting that differs from the default (arrows as number keys, tape). Turn off Japanese input before typing.
 
 In the program list, click the box at the top or type `/`, then type part of a name to show only the programs that match. The `# help:` text of the loaded program can be shown again with "読み込んだプログラムの説明" in the "プログラム" menu. Esc while a program is being loaded (typed in) stops loading.
 
