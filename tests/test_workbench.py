@@ -394,20 +394,48 @@ def test_moves_home_end_page():
     assert (b.row, b.col) == (0xC000, 0)
 
 
-def test_key_repeat_only_while_editing():
-    """作業欄に打っているあいだだけキーをリピートし、実行中は本体にキーをそのまま送る"""
+def test_key_repeat_only_while_editing(monkeypatch):
+    """作業欄に打っているあいだだけ、押し続けたカーソルのキーをリピートする。1フレームに
+    1回まで動かし、離せばすぐ止まる。実行中は本体にキーをそのまま送り、リピートしない"""
+    from pc1251emu import app as appmod
+
+    now = [100.0]
+    monkeypatch.setattr(appmod.time, "monotonic", lambda: now[0])
     app = make_app(scale=0.5, frames=2, norom=True)
-    assert app.bench is not None
-    assert pygame.key.get_repeat() == app.REPEAT
+    b = app.bench
+    assert pygame.key.get_repeat() == (0, 0)  # pygameのリピートは使わない
     _type(app, "C000 2D01")  # JR C000(自分へ)
+    b.go(0xC000)
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    assert b.row == 0xC008
+    now[0] += 0.3
+    app.frame()
+    assert b.row == 0xC008  # まだ始まらない
+    now[0] += 0.5  # フレームが遅れても、1フレームに1回だけ
+    app.frame()
+    assert b.row == 0xC010
+    now[0] += 0.06
+    app.frame()
+    assert b.row == 0xC018
+    app.handle(ev(pygame.KEYUP, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    now[0] += 1.0
+    app.frame()
+    assert b.row == 0xC018  # 離せばすぐ止まる
+    _type(app, "1")  # 16進表記の字はリピートしない
+    assert app.held_key is None
+    b.go(0xC000)
     _key(app, pygame.K_g, "g", pygame.KMOD_CTRL)
     app.frame()
-    assert app.bench.state == "run" and pygame.key.get_repeat() == (0, 0)
+    assert b.state == "run"
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    now[0] += 1.0
+    app.frame()
+    assert app.held_key is None and b.row == 0xC000  # 実行中は作業欄に届かない
+    app.handle(ev(pygame.KEYUP, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
     _key(app, pygame.K_PERIOD, ".", pygame.KMOD_CTRL)
     app.frame()
-    assert app.bench.state == "pause" and pygame.key.get_repeat() == app.REPEAT
     _key(app, pygame.K_UP, "", pygame.KMOD_CTRL)  # ⌘↑で開始番地へ
-    assert app.bench.row == 0xC000
+    assert b.row == 0xC000
     app.close()
 
 
@@ -1083,4 +1111,61 @@ def test_paste_into_start_field(monkeypatch):
     _key(app, pygame.K_v, "v", pygame.KMOD_CTRL)
     assert (b.start, b.start_by, b.start_buf) == (0xC010, "user", None)
     assert bytes(app.m.mem[0xC000:0xC003]) == bytes.fromhex("020137")
+    app.close()
+
+
+def test_counter_reset_clears_timer_flags():
+    """OUTCでカウンタをリセットすると、立ったままのタイマの印も消える。リセットのあとTEST 01で
+    512msを待つプログラム(押し続けたキーの繰り返しまでの待ちなど)が、前に立った印で
+    すぐに抜けない"""
+    from pc1251emu.machine import TICK_2MS
+
+    m, _b = bench()
+    m.halted = True  # 時間だけ進める
+    m.run(TICK_2MS * 257)
+    assert m.test_bits() & 0x03 == 0x03  # 読まれないまま立っている
+    m.out_c(0x03)
+    assert m.test(0x03) == 0
+    m.halted = True
+    m.run(TICK_2MS * 255)
+    assert m.test(0x01) == 0  # 510msではまだ
+    m.halted = True
+    m.run(TICK_2MS)
+    assert m.test(0x01) == 0x01  # 512msで立つ
+
+
+def test_timer_counts_only_after_reset_in_a_run():
+    """まとめて動かす区切りの途中でカウンタをリセットしても、タイマはリセットのあとの
+    時間だけ進む(区切りの頭からの時間を足すと、リセットの直後に2msの印が立つ)"""
+    from pc1251emu.machine import TICK_2MS
+
+    m, b = bench()
+    # WAIT FFを並べて2msの8割ほど待ってから、Cポートに02を出してカウンタをリセットし、
+    # その場で回る(WAIT FFは6+255サイクル)
+    waits = TICK_2MS * 8 // 10 // 261
+    code = bytes.fromhex("4EFF" * waits + "0202125FDBDF2D01")
+    b.load_blocks([(0xC000, code)], 0xC000)
+    m.cpu.pc = 0xC000
+    m.t2 = m.t512cnt = 0
+    m.t2ms = m.t512 = 0
+    m.run(TICK_2MS)
+    assert m.cpu.pc == 0xC000 + len(code) - 2 and m.t2 < TICK_2MS // 2
+    assert m.test(0x02) == 0
+    m.run(TICK_2MS)
+    assert m.test(0x02) == 0x02
+
+
+def test_lcd_duty_from_real_writes():
+    """液晶RAMに書いた時刻から、点いていた時間の割合を求める。ほんの数サイクルだけ点いた
+    ドットは、そのフレームのあいだずっと点いていたようには出ない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b = app.bench
+    # F800に7Fを書いてすぐ00に戻し、WAITで待って繰り返す
+    b.paste("C000 027F10F800520200524EFF4EFF2D0E")
+    app.bench_do("run")
+    for _ in range(3):
+        app.frame()
+    share = app.lcd_duty[0]
+    assert 0 < share[0] < 0.03 and share[7] == 0
+    assert app.panel.level[0][0] < 0.05
     app.close()

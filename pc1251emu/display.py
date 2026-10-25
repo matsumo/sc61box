@@ -346,7 +346,12 @@ class Panel:
         mode: str,
         pressed: set[str] | frozenset[str] = frozenset(),
         powered: bool = True,
+        duty: dict[int, list[float]] | None = None,
     ) -> pygame.Surface:
+        """1フレームぶん描く。dutyは、このフレームのあいだに中身が変わった列の、各ドット
+        (ビット0〜7)が点いていた時間の割合。その列のドットは、割合を目当てにして明るさを
+        近づける(書き換えの途中の短い中身が、1フレームまるごと出ないように)。ほかの列は
+        columnsで描く"""
         dst = self.canvas
         dst.blit(self.switch[mode], self.sw_xy)
         rects = self.key_rects
@@ -372,6 +377,7 @@ class Panel:
         w = self.w
         col_x = self.col_x
         r = self.line_rows
+        mixed = duty if on and duty else None
         for y in range(r * self.lines):
             lrow = level[y]
             bit = 1 << (y % r)
@@ -379,7 +385,13 @@ class Panel:
             py = my + self._row_y(y)
             for x in range(w):
                 v = lrow[x]
-                if on and columns[base + x] & bit:
+                share = mixed.get(base + x) if mixed else None
+                if share is not None:
+                    t = share[y % r]
+                    v += (t - v) * (rise if t > v else fall)
+                    if v < 0.004:
+                        v = 0.0
+                elif on and columns[base + x] & bit:
                     v += (1.0 - v) * rise
                 else:
                     v -= v * fall

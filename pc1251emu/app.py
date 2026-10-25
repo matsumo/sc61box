@@ -355,6 +355,12 @@ class App:
         self.rec_buzzer = Buzzer()  # 録画の音は鳴らす音とは別に作る
         self.overshoot = 0  # 前のフレームで進みすぎたサイクル
         self.rush_spans: list[tuple[int, int]] = []  # このフレームで速く回したサイクルの範囲
+        # このフレームのあいだに中身が変わった液晶の列と、その列の各ドットが点いていた時間の
+        # 割合(_lcd_duty)。列の番号は、その列の液晶RAMの番地から引く
+        self.lcd_duty: dict[int, list[float]] = {}
+        self.lcd_cols: dict[int, list[int]] = {}
+        for i, a in enumerate(self.m.column_addrs()):
+            self.lcd_cols.setdefault(a, []).append(i)
         self.turbo: float = 1  # 速さの倍率(SPEEDSのどれか)
         self.numpad_arrows = bool(getattr(args, "numpad", False))
         self.dragging_switch = False
@@ -385,8 +391,9 @@ class App:
             if prog is None:
                 raise FileNotFoundError(tr("{name}が見つかりません", name=args.program))
             self.pending = (prog, args.run)
-        pygame.key.set_repeat()
-        self.repeating = False  # pygameのキーのリピートを使っているか(_key_repeat)
+        pygame.key.set_repeat()  # リピートは作業欄だけで、自分で数える(_key_repeat)
+        # 作業欄で押し続けているキーと、次にリピートする時刻
+        self.held_key: tuple[object, float] | None = None
         pygame.key.start_text_input()
 
     @staticmethod
@@ -417,6 +424,9 @@ class App:
             # キーを作業欄の打ち込みに使う(本体のキーには送らない)
             if not mods & (pygame.KMOD_META | pygame.KMOD_CTRL):
                 self.bench_key(ev)
+                # 押し続けたカーソルのキーはリピートする(ほかのキーを押したらやめる)
+                at = time.monotonic() + self.REPEAT[0]
+                self.held_key = (ev, at) if ev.key in self.REPEAT_KEYS else None
             return
         actions = {
             pygame.K_F6: self.open_menu,
@@ -473,6 +483,8 @@ class App:
 
     def key_up(self, ev) -> None:
         m = self.m
+        if self.held_key is not None and getattr(self.held_key[0], "key", None) == ev.key:
+            self.held_key = None
         if ev.key == pygame.K_ESCAPE:
             self.release_brk("key")
         elif ev.key == pygame.K_F5:
@@ -687,19 +699,29 @@ class App:
         if msg:
             v.say(msg)
 
-    REPEAT = (350, 40)  # 作業欄のキーのリピート(押してから始まるまで、間隔。ミリ秒)
+    REPEAT = (0.45, 0.05)  # 作業欄のキーのリピート(押してから始まるまで、間隔。秒)
+    # リピートするキー(カーソルを動かすもの。16進表記の字は押し続けても1字だけ)
+    REPEAT_KEYS = frozenset(
+        (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_PAGEUP,
+         pygame.K_PAGEDOWN, pygame.K_BACKSPACE)
+    )  # fmt: skip
 
     def _key_repeat(self) -> None:
-        """作業欄にキーを打っているあいだだけ、押し続けたキーをリピートさせる。本体に
-        キーを送るとき(ROMで動かしているとき、ROMなしで実行中のとき)は、押したままの
-        キーをそのまま伝えるのでリピートしない"""
-        want = self.pane_keys() and self.menu is None
-        if want != self.repeating:
-            if want:
-                pygame.key.set_repeat(*self.REPEAT)
-            else:
-                pygame.key.set_repeat()
-            self.repeating = want
+        """作業欄にキーを打っているあいだだけ、押し続けたカーソルのキーをリピートさせる。
+        1フレームに1回まで動かし、離せばすぐ止める(pygameのリピートは、フレームが遅れると
+        たまった分をまとめて届け、離したあとにも残りが届いて行き過ぎる)。本体にキーを送る
+        とき(ROMで動かしているとき、ROMなしで実行中のとき)はリピートしない"""
+        held = self.held_key
+        if held is None:
+            return
+        if not self.pane_keys() or self.menu is not None or self.popup is not None:
+            self.held_key = None
+            return
+        ev, at = held
+        now = time.monotonic()
+        if now >= at:
+            self.bench_key(ev)
+            self.held_key = (ev, now + self.REPEAT[1])
 
     def bench_click(self, pos) -> None:
         b, v = self.bench, self.bench_view
@@ -1971,6 +1993,7 @@ class App:
         """パソコンのキーとマウスで押しているものを、すべて離す。ほかのウィンドウに移ると
         キーを離したことが届かないので、押したままにならないようにする"""
         self.typer.release_physical()
+        self.held_key = None
         self.mouse_up()
         self.brk_by.clear()
         self.m.brk = self.m.reset_key = False
@@ -2020,8 +2043,9 @@ class App:
             self.say(tr("テープが終わりました"))
         pressed = set(m.held) | ({"BRK"} if m.brk else set())
         surf = self.panel.draw(
-            m.columns(), m.symbols(), m.display_on(), m.mode, pressed, powered=m.power
-        )
+            m.columns(), m.symbols(), m.display_on(), m.mode, pressed, powered=m.power,
+            duty=self.lcd_duty,
+        )  # fmt: skip
         if self.recorder is not None and not self.rec_paused:
             self.record_frame(surf, c0, bool(speed) and not typing)
         self._show(surf)
@@ -2065,6 +2089,9 @@ class App:
         target = m.cpu.cycles + cycles - self.overshoot
         self.overshoot = 0
         self.rush_spans = []
+        # このフレームのあいだに液晶RAMに書いたものを記録する(_lcd_duty)
+        start = m.cpu.cycles
+        m.lcd_trace = []
         while (left := target - m.cpu.cycles) > 0:
             rush = False
             if not self.boot_frames:
@@ -2086,6 +2113,43 @@ class App:
                 break
         else:
             self.overshoot = m.cpu.cycles - target
+        self.lcd_duty = self._lcd_duty(start, m.lcd_trace or [])
+        m.lcd_trace = None
+
+    def _lcd_duty(
+        self, start: int, trace: list[tuple[int, int, int, int]]
+    ) -> dict[int, list[float]]:
+        """液晶RAMに書いた記録から、このフレーム(サイクルstart〜いま)のあいだに中身が
+        変わった列の、各ドット(ビット0〜7)が点いていた時間の割合を求める。書き換えの
+        途中の短い中身は、その短さの分だけ薄く出る"""
+        end = self.m.cpu.cycles
+        total = end - start
+        if not trace or total <= 0:
+            return {}
+        cols = self.lcd_cols
+        cur: dict[int, tuple[int, int]] = {}  # 番地: (いまの値, その値になったサイクル)
+        lit: dict[int, list[int]] = {}
+
+        def add(a: int, v: int, n: int) -> None:
+            if v and n > 0:
+                acc = lit.setdefault(a, [0] * 8)
+                for b in range(8):
+                    if v >> b & 1:
+                        acc[b] += n
+
+        for c, a, old, new in trace:
+            if a not in cols:
+                continue
+            v, since = cur.get(a, (old, start))
+            add(a, v, c - since)
+            cur[a] = (new, c)
+        duty: dict[int, list[float]] = {}
+        for a, (v, since) in cur.items():
+            add(a, v, end - since)
+            share = [n / total for n in lit.get(a, [0] * 8)]
+            for i in cols[a]:
+                duty[i] = share
+        return duty
 
     def _run_cpu(self, cycles: int) -> bool:
         """CPUを最大cyclesサイクル動かす。作業欄の止める所、呼び出しの戻り先、ROMなしでは

@@ -28,6 +28,7 @@ import base64
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from .i18n import tr
@@ -372,6 +373,9 @@ class PC1251(Bus):
         self.mode = "RUN"
         self.pa = self.pb = self.pc_out = self.pf = 0
         self.lcd_dirty = True
+        # 液晶RAMに書いた記録((サイクル, 番地, 前の値, 書いた値)の並び)。Noneなら記録しない
+        self.lcd_trace: list[tuple[int, int, int, int]] | None = None
+        self.reset_at: int | None = None  # 実行の区切りの中でカウンタをリセットしたサイクル
         self.power = True  # Cポートのビット3で切れる
         self.halted = False  # Cポートのビット2で止まっている
         self.printer: Printer | None = None  # つないだプリンタ
@@ -422,9 +426,11 @@ class PC1251(Bus):
         elif self._lcd_page[a >> 8]:
             a = self._lcd_page[a >> 8] << 8 | (a & 0xFF)
         if self.wmask[a]:
-            self.mem[a] = v
             if self._lcd_ram[a >> 8]:
                 self.lcd_dirty = True
+                if self.lcd_trace is not None and self.mem[a] != v:
+                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+            self.mem[a] = v
 
     def _scan(self, port: str, strobe: int) -> int:
         v = 0
@@ -481,9 +487,12 @@ class PC1251(Bus):
     def out_c(self, v: int) -> None:
         old = self.pc_out
         self.pc_out = v
-        if v & 0x02:  # カウンタのリセット
+        if v & 0x02:  # カウンタのリセット。立っているタイマの印も消す(リセットからTEST命令で
+            # 512msを待つプログラムが、前に立ったままの印で待たずに抜けないように)
             self.t2 = 0
             self.t512cnt = 0
+            self.t512 = self.t2ms = 0
+            self.reset_at = self.cpu.cycles
         if (v ^ old) & 0xF0:
             self.sound_events.append((self.cpu.cycles, v >> 4))
         if v & 0x08:  # 電源オフ
@@ -537,13 +546,16 @@ class PC1251(Bus):
             chunk = min(cycles, TICK_2MS - self.t2)
             if self.halted and (self.held or self.brk or self.reset_key):
                 self.halted = False
+            self.reset_at = None
             if self.halted:  # 止まっているあいだは時間だけ進める
                 used = chunk
                 cpu.cycles += used
             else:
                 used = cpu.run(chunk, guard, seen)
             cycles -= used
-            self._tick(used)
+            # 途中でカウンタをリセットしたときは、リセットのあとの時間だけタイマを進める
+            reset = self.reset_at
+            self._tick(used if reset is None else cpu.cycles - reset)
             if cpu.trapped:
                 return True
         return False
@@ -570,11 +582,12 @@ class PC1251(Bus):
     def display_on(self) -> bool:
         return self.power and bool(self.pc_out & 0x01)
 
-    def columns(self) -> list[int]:
+    def columns(self, mem: Sequence[int] | None = None) -> list[int]:
         """液晶の列(1バイトが縦の7ドット)を左から並べる。左の12桁はF800から順に、
         残りはF87Bから逆順。2行の液晶では1行目のあとに2行目が続き、各行の左の12桁は
-        2000(2行目は2040)から、右の12桁は2800(2840)から順に並ぶ"""
-        m = self.mem
+        2000(2行目は2040)から、右の12桁は2800(2840)から順に並ぶ。memを渡すと、
+        メモリの代わりにそこから読む(column_addrsが番地を求めるのに使う)"""
+        m = self.mem if mem is None else mem
         if self.model.lines == 2:
             out: list[int] = []
             for row in (0x00, 0x40):
@@ -584,6 +597,10 @@ class PC1251(Bus):
         n = self.model.cells * 5
         left = min(n, 60)
         return list(m[0xF800 : 0xF800 + left]) + [m[0xF87B - i] for i in range(n - left)]
+
+    def column_addrs(self) -> list[int]:
+        """columnsの各列が、液晶RAMのどの番地のバイトか"""
+        return self.columns(range(0x10000))
 
     # PC-1260/1261/1262のBASICがプログラムの先頭(FFの番地)を置くところ。先頭はEQU#で動かせる
     PROG_START_PTR = 0x6619
@@ -913,9 +930,11 @@ class PC1350(PC1251):
         if self.card == 8 and 0x2000 <= a < 0x4000:
             a += 0x2000
         if self.wmask[a]:
-            self.mem[a] = v
             if 0x7000 <= a < 0x7A00:
                 self.lcd_dirty = True
+                if self.lcd_trace is not None and self.mem[a] != v:
+                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+            self.mem[a] = v
 
     def in_a(self) -> int:
         """IAに出した値に、押されたキーのビットを重ねる。IAの2本の線のあいだのキーは、
@@ -953,9 +972,9 @@ class PC1350(PC1251):
         self.pf = v
 
     # ---- 液晶 ----
-    def columns(self) -> list[int]:
+    def columns(self, mem: Sequence[int] | None = None) -> list[int]:
         """上の段から順に、各段の左から150列ぶんの液晶RAM(1バイトが縦8ドット)"""
-        m = self.mem
+        m = self.mem if mem is None else mem
         out: list[int] = []
         for band in LCD_BANDS_1350:
             for blk in LCD_BLOCKS_1350:
