@@ -1297,7 +1297,9 @@ DATA_FG = (134, 172, 160)  # データの行
 
 def why_mark(why: str) -> str:
     """逆アセンブルの行の右に出す、命令かデータかを決めたわけの1字"""
-    marks = {"executed": tr("実"), "flow": tr("流"), "guessed": tr("推"), "user": tr("決")}
+    # 言語によらない記号にする。いちばん多い静的解析の命令は目立たない「.」、実行済みの
+    # 命令は確かめたので「✓」、推定は「?」、ユーザ指定は「U」(user)
+    marks = {"executed": "✓", "guessed": "?", "flow": ".", "user": "U"}
     return marks.get(why, "")
 
 
@@ -1305,30 +1307,25 @@ def why_text(cm: codemap.CodeMap, a: int) -> str:
     """番地aの行を命令かデータに決めたわけ(印にマウスを載せたときに出す)"""
     code, data = cm.why[a & 0xFFFF], cm.state(a)[0] == "data"
     if code == codemap.EXEC:
-        return tr("実行した命令")
+        return tr("実行済みの命令")
     if code == codemap.FLOW:
-        return tr("開始番地、CALLの番地、止める所か実行した命令から、流れをたどって着いた命令")
+        return tr("分岐と呼び出しをたどり、命令と判定")
     if code == codemap.TABLE:
-        return tr("DTCの表(行の数は手前のPTCから)")
+        return tr("DTCの表(行の数はPTCから)")
     if code == codemap.GUESS:
         if data:
-            return tr("DTCの表(どこからもたどれないので、命令として読んだときの表)")
-        return tr("どこからもたどれないので、命令かどうかわかりません")
+            return tr("DTCの表(参照されていない)")
+        return tr("参照されていないため不明")
     if code == codemap.TEXT:
-        return tr("文字が並んでいるので、データとみました")
+        return tr("文字列と推定")
     if code == codemap.FILL:
-        return tr("00かFFが並んでいるので、データとみました")
+        return tr("00・FFの連続と推定")
     if code == codemap.JUNK:
-        return tr(
-            "命令として読むと、ない命令か、RAMとROMの外へ飛ぶ命令があるので、データとみました"
-        )
+        return tr("未定義命令などを含むため、データと推定")
     if code == codemap.NOEND:
-        return tr(
-            "命令として読むと、RTNか条件なしのジャンプで終わらないまま途切れるので、"
-            "データとみました"
-        )
+        return tr("RTNやジャンプで終わらないため、データと推定")
     if code == codemap.USER:
-        return tr("自分で決めたデータ") if data else tr("自分で決めた命令")
+        return tr("ユーザ指定のデータ") if data else tr("ユーザ指定の命令")
     return ""
 
 
@@ -1768,11 +1765,7 @@ class BenchView:
             self.hits.append((pygame.Rect(x, y, 30 * cw, lh), "goto", a))
             y += lh
         # 右端の印の見方(詳しいわけは、印にマウスを載せると出る)
-        legend = tr(
-            "{e}:実行した　{f}:たどった　{g}:推し量り　{u}:自分で決めた",
-            e=why_mark("executed"), f=why_mark("flow"), g=why_mark("guessed"),
-            u=why_mark("user"),
-        )  # fmt: skip
+        legend = tr("✓:実行済み　.:静的解析　?:推定　U:ユーザ指定")
         self._text(dst, x0, y + 1, legend, DIM, self.small)
         return y + lh
 

@@ -562,35 +562,17 @@ EN: dict[str, str | tuple[str, str]] = {
     "Aの文字の形の番地−1をXへ(J_ONE)": "glyph address of A, minus 1, into X (J_ONE)",
     # ---- 逆アセンブルの命令とデータ ----
     "ほかは→{addr:04X}": "else→{addr:04X}",
-    "実": "E",
-    "流": "F",
-    "推": "?",
-    "決": "M",
-    "実行した命令": "Executed instruction",
-    "開始番地、CALLの番地、止める所か実行した命令から、流れをたどって着いた命令": (
-        "Instruction reached by following the flow from the start address, a CALL address, "
-        "a breakpoint or an executed instruction"
-    ),
-    "DTCの表(行の数は手前のPTCから)": "DTC table (row count from the preceding PTC)",
-    "DTCの表(どこからもたどれないので、命令として読んだときの表)": (
-        "DTC table (not reachable from anywhere; table as read from the instructions)"
-    ),
-    "どこからもたどれないので、命令かどうかわかりません": (
-        "Not reachable from anywhere, so it may or may not be code"
-    ),
-    "文字が並んでいるので、データとみました": "Looks like text, so treated as data",
-    "00かFFが並んでいるので、データとみました": "A run of 00 or FF, so treated as data",
-    "命令として読むと、ない命令か、RAMとROMの外へ飛ぶ命令があるので、データとみました": (
-        "Read as code it has undefined opcodes or jumps outside RAM and ROM, so treated as data"
-    ),
-    "自分で決めたデータ": "Marked as data",
-    "自分で決めた命令": "Marked as code",
+    "実行済みの命令": "Executed instruction",
+    "ユーザ指定のデータ": "User-specified data",
+    "ユーザ指定の命令": "User-specified code",
     "{addr:04X}番地からデータにする": "Mark data from {addr:04X}",
-    "次の指定か、実行した命令の手前までデータ": "Data up to the next mark or executed instruction",
+    "次の指定か、実行済みの命令の手前までデータ": (
+        "Data up to the next mark or executed instruction"
+    ),
     "{addr:04X}番地から命令にする": "Mark code from {addr:04X}",
-    "ここから命令の流れをたどる": "Follow the code flow from here",
+    "ここから静的解析する": "Analyse the code from here",
     "{addr:04X}番地の指定を消す": "Clear the mark at {addr:04X}",
-    "命令かデータかを推し量りに戻す": "Go back to guessing code or data",
+    "推定に戻す": "Back to guessing",
     "{addr:04X}番地からデータにしました": "Marked data from {addr:04X}",
     "{addr:04X}番地から命令にしました": "Marked code from {addr:04X}",
     "{addr:04X}番地の指定を消しました": "Cleared the mark at {addr:04X}",
@@ -601,11 +583,19 @@ EN: dict[str, str | tuple[str, str]] = {
     "貼り付けた文字は番地ではありません(16進表記の4桁で)": (
         "The pasted text is not an address (use 4 hex digits)"
     ),
-    "{e}:実行した　{f}:たどった　{g}:推し量り　{u}:自分で決めた": (
-        "Marks at right  {e}: executed  {f}: followed  {g}: guessed  {u}: marked"
+    "分岐と呼び出しをたどり、命令と判定": "Code found by following branches and calls",
+    "DTCの表(行の数はPTCから)": "DTC table (row count from PTC)",
+    "DTCの表(参照されていない)": "DTC table (unreferenced)",
+    "参照されていないため不明": "Unreferenced, so unknown",
+    "文字列と推定": "Guessed as text",
+    "00・FFの連続と推定": "Guessed as a run of 00/FF",
+    "未定義命令などを含むため、データと推定": (
+        "Contains undefined opcodes or the like, so guessed as data"
     ),
-    "命令として読むと、RTNか条件なしのジャンプで終わらないまま途切れるので、データとみました": (
-        "Read as code it breaks off without ending in RTN or an unconditional jump, "
-        "so treated as data"
+    "RTNやジャンプで終わらないため、データと推定": (
+        "Does not end in RTN or a jump, so guessed as data"
+    ),
+    "✓:実行済み　.:静的解析　?:推定　U:ユーザ指定": (
+        "Marks at right  ✓: executed  .: static analysis  ?: guessed  U: user-specified"
     ),
 }

@@ -1304,10 +1304,10 @@ class App:
         items.append(SEPARATOR)
         marks = (
             ("data", tr("{addr:04X}番地からデータにする", addr=a),
-             tr("次の指定か、実行した命令の手前までデータ")),
+             tr("次の指定か、実行済みの命令の手前までデータ")),
             ("code", tr("{addr:04X}番地から命令にする", addr=a),
-             tr("ここから命令の流れをたどる")),
-            (None, tr("{addr:04X}番地の指定を消す", addr=a), tr("命令かデータかを推し量りに戻す")),
+             tr("ここから静的解析する")),
+            (None, tr("{addr:04X}番地の指定を消す", addr=a), tr("推定に戻す")),
         )  # fmt: skip
         for what, label, note in marks:
             why = b.mark_refusal(a, what)
