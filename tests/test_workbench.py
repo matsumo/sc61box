@@ -64,15 +64,27 @@ def test_type_book_line():
 
 
 def test_cursor_moves_between_fields():
+    """番地の4桁目の右はバイトの欄。←→は行の端で前と次の行へ回る(番地の欄へはTabかHome)"""
     _m, b = bench()
     b.to_addr()
     b.right()
     b.right()
     b.right()
     b.right()  # 番地の4桁目の右はバイトの欄
-    assert (b.field, b.col, b.nib) == ("data", 0, 0)
+    assert (b.row, b.field, b.col, b.nib) == (0xC000, "data", 0, 0)
+    b.left()  # 行の最初のバイトの左は、前の行の最後のバイトの下の桁
+    assert (b.row, b.field, b.col, b.nib) == (0xBFF8, "data", 7, 1)
+    b.right()  # 行の最後のバイトの下の桁の右は、次の行の最初のバイト
+    assert (b.row, b.col, b.nib) == (0xC000, 0, 0)
+    b.row_end()  # 行の終わり(最後のバイトの後ろ)から
+    b.right()
+    assert (b.row, b.col, b.nib) == (0xC008, 0, 0)
+    b.row_end()
     b.left()
-    assert (b.field, b.nib) == ("addr", 3)
+    assert (b.row, b.col, b.nib) == (0xC008, 7, 1)
+    b.to_addr()
+    b.left()
+    assert (b.row, b.field, b.nib) == (0xC008, "addr", 0)  # 番地の欄の中では回らない
 
 
 def test_run_vline():
@@ -930,4 +942,145 @@ def test_undo_notes_read_naturally_and_dump_stays():
     v._ranges = ([], 0.0)
     app.frame()
     assert next(r for r, kind, a in v.hits if kind == "addr").y == top
+    app.close()
+
+
+def test_start_follows_first_address_only():
+    """開始番地は、まだ決めていなければ最初に打った番地になる。書き始めたあとに番地を
+    打っても、カーソルが動くだけで開始番地は変わらない"""
+    m, b = bench()
+    assert b.start == 0xC000 and b.start_by == ""
+    type_line(b, "C100 37")
+    assert b.start == 0xC100 and b.start_by == "auto"
+    b.to_addr()
+    type_line(b, "C200 37")
+    assert b.start == 0xC100 and b.row == 0xC200
+
+
+def test_set_start_is_kept():
+    """自分で決めた開始番地は、貼り付けでも、取り消しでも変わらない。プログラムを読み込めば
+    そのプログラムの開始番地になる"""
+    m, b = bench()
+    b.paste("C000 37")
+    assert b.set_start_at(0xC010) == "開始番地をC010にしました"
+    assert (b.start, b.start_by) == (0xC010, "user")
+    b.paste("C100 2D01")
+    assert b.start == 0xC010
+    b.undo()
+    assert b.start == 0xC010
+    b.to_addr()
+    type_line(b, "C300 37")
+    assert b.start == 0xC010
+    assert "RAMの外" in b.set_start_at(0x1000) and b.start == 0xC010
+    b.load_blocks([(0xC400, b"\x37")], 0xC400)
+    assert (b.start, b.start_by) == (0xC400, "auto")
+
+
+def test_start_survives_state_save():
+    """どこでもセーブに、開始番地を自分で決めたかも書く。前の版の保存(決め方がない)は、
+    自動で決めたものとして読む"""
+    m, b = bench()
+    b.set_start_at(0xC020)
+    info = b.save()
+    m2, b2 = bench()
+    b2.restore(info)
+    assert (b2.start, b2.start_by) == (0xC020, "user")
+    del info["start_by"]
+    b2.restore(info)
+    assert (b2.start, b2.start_by) == (0xC020, "auto")
+
+
+def test_start_field_typing():
+    """開始番地の欄をクリックして16進表記の4桁を打つと、開始番地になる。Escでやめると
+    変わらない。打っているあいだ、カーソルは動かない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    _type(app, "C000 37")
+    app.frame()
+    rect = next(r for r, kind, _a in v.hits if kind == "start")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    assert b.start_buf == ""
+    app.frame()
+    _type(app, "C1")
+    _key(app, pygame.K_ESCAPE)
+    assert b.start_buf is None and b.start == 0xC000
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    cursor = b.cursor
+    _type(app, "C08")
+    _key(app, pygame.K_BACKSPACE)
+    _type(app, "10")
+    assert (b.start, b.start_by, b.start_buf) == (0xC010, "user", None)
+    assert b.cursor == cursor and app.m.mem[0xC001] == 0
+    app.frame()
+    app.close()
+
+
+def test_start_shortcut_and_menu():
+    """⌘Aでカーソルの所を開始番地にする。作業欄の右クリックでは、クリックした番地を開始番地に
+    する、そこから実行する、止める所を置くを選べる。開始番地の行には印を描く"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    b.paste("C000 37\nC010 027F10F8005237")
+    b.place(0xC010)
+    _key(app, pygame.K_a, "a", pygame.KMOD_CTRL)
+    assert (b.start, b.start_by) == (0xC010, "user")
+    b.go(0xC000)
+    app.frame()
+    hit = next(h for h in v.hits if h[1] == "goto" and h[2] == 0xC000)
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=hit[0].center))
+    assert app.popup is not None and app.popup.kind == "bench" and b.cursor == 0xC000
+    items = app.popup_items()
+    labels = [it.label for it in items]
+    assert labels == [
+        "C000番地を開始番地にする",
+        "C000番地から実行する",
+        "C000番地の止める所を置く",
+        "",
+        "C000番地からデータにする",
+        "C000番地から命令にする",
+        "C000番地の指定を消す",
+    ]
+    app.popup_run(2)
+    assert 0xC000 in b.breaks and app.popup is None
+    app.frame()  # 開始番地の印と止める所を描く
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=hit[0].center))
+    assert app.popup_items()[2].label == "C000番地の止める所を外す"
+    app.popup_run(0)
+    assert b.start == 0xC000
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=hit[0].center))
+    assert not app.popup_items()[0].enabled  # いまの開始番地
+    b.breaks.clear()
+    app.popup = None
+    app.bench_run_at(0xC010)
+    assert b.start == 0xC010
+    for _ in range(3):
+        app.frame()
+    assert b.state == "edit" and app.m.columns()[0] == 0x7F
+    app.close()
+
+
+def test_paste_into_start_field(monkeypatch):
+    """開始番地の欄に打っているあいだの⌘Vは、番地として欄へ入れ、ダンプは書き換えない。
+    番地でなければ欄はそのまま。⌘Zは欄の字を消すだけ、⌘Aは何もしない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    _type(app, "C000 020137")
+    b.place(0xC000)
+    app.frame()
+    rect = next(r for r, kind, _a in v.hits if kind == "start")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    monkeypatch.setattr(app, "clipboard", lambda: "LIA 01")
+    _key(app, pygame.K_v, "v", pygame.KMOD_CTRL)
+    assert b.start_buf == "" and bytes(app.m.mem[0xC000:0xC003]) == bytes.fromhex("020137")
+    assert "番地ではありません" in v.flash
+    _type(app, "C0")
+    _key(app, pygame.K_z, "z", pygame.KMOD_CTRL)
+    _key(app, pygame.K_a, "a", pygame.KMOD_CTRL)
+    assert b.start_buf == "" and b.start == 0xC000 and b.can_undo()
+    monkeypatch.setattr(app, "clipboard", lambda: " &C010\n")
+    _key(app, pygame.K_v, "v", pygame.KMOD_CTRL)
+    assert (b.start, b.start_by, b.start_buf) == (0xC010, "user", None)
+    assert bytes(app.m.mem[0xC000:0xC003]) == bytes.fromhex("020137")
     app.close()

@@ -8,6 +8,8 @@ from typing import NamedTuple
 
 import pygame
 
+from .i18n import tr
+
 WHITE = (240, 240, 235)
 GREY = (160, 162, 168)
 SELECTED = (70, 92, 140, 255)
@@ -43,6 +45,37 @@ def _panel(w: int, h: int, alpha: int = 215) -> pygame.Surface:
 SEP = "   "  # 説明の1行の中で、項目を分ける空白
 
 
+def _breakable(text: str, i: int) -> bool:
+    """text[i]の前で行を分けてよいか。英字や数字の語の途中では分けない"""
+    a, b = text[i - 1], text[i]
+    return a == " " or b == " " or not (a.isascii() and b.isascii())
+
+
+def cut(font: pygame.font.Font, text: str, width: int) -> tuple[str, str]:
+    """textを、幅widthに入る頭と残りに分ける。語の途中では切らない(1語も入らなければ字で
+    切る)。空白で分けたときは、残りの頭の空白を落とす"""
+    k = len(text)
+    while k > 1 and font.size(text[:k])[0] > width:
+        k -= 1
+    if k < len(text):
+        j = next((j for j in range(k, 0, -1) if _breakable(text, j)), 0)
+        if j:
+            k = j
+    head, rest = text[:k], text[k:]
+    if head.endswith(" ") or rest.startswith(" "):
+        head, rest = head.rstrip(" ") or head, rest.lstrip(" ")
+    return head, rest
+
+
+def wrap_text(font: pygame.font.Font, text: str, width: int) -> list[str]:
+    """textを幅widthで折り返す(語の途中では切らない)"""
+    lines = []
+    while font.size(text)[0] > width and len(text) > 1:
+        head, text = cut(font, text, width)
+        lines.append(head)
+    return lines + [text] if text or not lines else lines
+
+
 def wrap(font: pygame.font.Font, text: str, width: int) -> list[str]:
     """textを幅widthに収まるように折り返す。なるべく項目の区切り(SEP)で切る"""
     out: list[str] = []
@@ -55,12 +88,9 @@ def wrap(font: pygame.font.Font, text: str, width: int) -> list[str]:
         if line:
             out.append(line)
         line = item
-        while font.size(line)[0] > width and len(line) > 1:  # 1項目でも入らなければ字で切る
-            k = len(line)
-            while k > 1 and font.size(line[:k])[0] > width:
-                k -= 1
-            out.append(line[:k])
-            line = line[k:]
+        if font.size(line)[0] > width:  # 1項目でも入らなければ、語の切れ目で切る
+            *heads, line = wrap_text(font, line, width)
+            out += heads
     out.append(line)
     return out
 
@@ -103,8 +133,12 @@ def draw_recording(
 ) -> None:
     """録画中であることを窓の右上に出す(録画には入らない)。一時停止中はそう出す"""
     sec = int(seconds)
-    text = "録画を一時停止中" if paused else "録画中"
-    label = font.render(f"{text} {sec // 60}:{sec % 60:02d}", True, WHITE)
+    clock = f"{sec // 60}:{sec % 60:02d}"
+    if paused:
+        text = tr("録画を一時停止中 {clock}", clock=clock)
+    else:
+        text = tr("録画中 {clock}", clock=clock)
+    label = font.render(text, True, WHITE)
     w, h = label.get_width() + 34, label.get_height() + 10
     x, y = dst.get_width() - w - 10, 10
     dst.blit(_panel(w, h, 200), (x, y))
@@ -177,15 +211,20 @@ class ProgramMenu:
 
     # ボタン: (表示, 短い表示, 動作の名前)。動作はApp.menu_actionが受ける。上の右には一覧
     # そのものの操作、下には選んだプログラムの操作を置く。下の2つは窓が狭くても名前を略さない
-    TOP_BUTTONS = (
-        ("フォルダを開く(O)", "フォルダ", "folder"),
-        ("読み直す(R)", "読み直す", "reload"),
-        ("閉じる(Esc)", "閉じる", "close"),
-    )
-    BUTTONS = (
-        ("読み込むだけ(Shift+Enter)", "読み込むだけ", "load"),
-        ("読み込んで実行(Enter)", "読み込んで実行", "run"),
-    )
+    @staticmethod
+    def top_buttons() -> tuple[tuple[str, str, str], ...]:
+        return (
+            (tr("フォルダを開く(O)"), tr("フォルダ"), "folder"),
+            (tr("読み直す(R)"), tr("読み直す"), "reload"),
+            (tr("閉じる(Esc)"), tr("閉じる"), "close"),
+        )
+
+    @staticmethod
+    def bottom_buttons() -> tuple[tuple[str, str, str], ...]:
+        return (
+            (tr("読み込むだけ(Shift+Enter)"), tr("読み込むだけ"), "load"),
+            (tr("読み込んで実行(Enter)"), tr("読み込んで実行"), "run"),
+        )
 
     def button_at(self, pos) -> str:
         """posにあるボタンの動作の名前(探す欄ならsearch)。なければ空"""
@@ -231,11 +270,12 @@ class ProgramMenu:
         y0 = max(10, (dst.get_height() - h) // 2)
         box = _panel(w, h, 255)
         self.box = pygame.Rect(x0, y0, w, h)
-        title = font.render("プログラム", True, WHITE)
+        title = font.render(tr("プログラム"), True, WHITE)
         # 右上の一覧の操作(幅が足りなければ短い表示にし、左の見出しを省いて探す欄を広く取る)
-        full = sum(font.size(b[0])[0] + 24 for b in self.TOP_BUTTONS)
+        top_specs = self.top_buttons()
+        full = sum(font.size(b[0])[0] + 24 for b in top_specs)
         short = full > w - title.get_width() - 220
-        tops = self._buttons(box, font, self.TOP_BUTTONS, w - 10, 6, lh - 4, short, right=True)
+        tops = self._buttons(box, font, top_specs, w - 10, 6, lh - 4, short, right=True)
         sx = 14
         if not short:
             box.blit(title, (14, 8))
@@ -244,29 +284,29 @@ class ProgramMenu:
         search = pygame.Rect(sx, 6, max(60, min(320, tops[0][1].x - sx - 12)), lh - 4)
         pygame.draw.rect(box, (44, 47, 54), search, border_radius=4)
         if self.query is None:
-            text, color = "名前で探す( / )", GREY
+            text, color = tr("名前で探す( / )"), GREY
         else:
             text, color = self.query + "▏", WHITE
         img = font.render(self._fit(font, text, search.width - 12), True, color)
         box.blit(img, (search.x + 8, search.centery - img.get_height() // 2))
         self.search_rect = search.move(x0, y0)
         if not items:
-            text = "まだ何もありません。.basか.hexを置いてください"
+            text = tr("まだ何もありません。.basか.hexを置いてください")
             if self.query is not None:
-                text = "合うものがありません(Escで探すのをやめる)"
+                text = tr("合うものがありません(Escで探すのをやめる)")
             box.blit(font.render(text, True, GREY), (14, 8 + lh))
         above, below = self.top, max(0, len(items) - self.top - rows)
         bar = 12 if above or below else 0  # 入りきらないときは右に位置のバーを出す
         where = []
         if above:
-            where.append(f"▲ 上にあと{above}本")
+            where.append(tr("▲ 上にあと{n}本", n=above))
         if below:
-            where.append(f"▼ 下にあと{below}本")
+            where.append(tr("▼ 下にあと{n}本", n=below))
         if where:
-            img = font.render("   ".join(where) + "(↑↓かホイールで)", True, GREY)
+            img = font.render(tr("{where}(↑↓かホイールで)", where="   ".join(where)), True, GREY)
             box.blit(img, (w - img.get_width() - 14 - bar, 8 + lh * (rows + 1)))
         if self.query is not None and items:
-            img = font.render("Escで探すのをやめる", True, GREY)
+            img = font.render(tr("Escで探すのをやめる"), True, GREY)
             box.blit(img, (14, 8 + lh * (rows + 1)))
         if bar:
             ty, th = 8 + lh, lh * rows - 2
@@ -282,7 +322,7 @@ class ProgramMenu:
                 pygame.draw.rect(box, SELECTED, (6, y - 2, w - 12 - bar, lh))
             info = prog.kinds + (f" {prog.size}B" if prog.size else "")
             if prog.errors:
-                info += " 読めない行あり"
+                info += " " + tr("読めない行あり")
             img = font.render(info, True, GREY)
             box.blit(img, (w - img.get_width() - 14 - bar, y))
             label = self._fit(font, prog.label(model), w - img.get_width() - 40 - bar)
@@ -295,7 +335,10 @@ class ProgramMenu:
             prog = items[self.sel]
             name = os.path.basename(prog.paths[0]) if prog.paths else prog.name
             models = prog.models
-            runs = "どの機種でも" if models is None else "・".join(f"PC-{m}" for m in models) + "用"
+            if models is None:
+                runs = tr("どの機種でも")
+            else:
+                runs = tr("{models}用", models=tr("・").join(f"PC-{m}" for m in models))
             meta = self._fit(font, f"{name}   {runs}", w - 28)
             box.blit(font.render(meta, True, GREY), (14, y))
             note = prog.errors[0] if prog.errors else "  ".join(prog.help.split("\n"))
@@ -304,11 +347,12 @@ class ProgramMenu:
                 box.blit(font.render(self._fit(font, note, w - 28), True, color), (14, y + lh))
         # 下のボタン。入らなければ( )のキーの説明を落とす
         y = 8 + lh * (rows + 4)
-        full = sum(font.size(b[0])[0] + 24 for b in self.BUTTONS)
+        specs = self.bottom_buttons()
+        full = sum(font.size(b[0])[0] + 24 for b in specs)
         short = full > w - 20
         self.button_rects = [
             (act, r.move(x0, y0))
-            for act, r in tops + self._buttons(box, font, self.BUTTONS, 10, y - 2, lh - 2, short)
+            for act, r in tops + self._buttons(box, font, specs, 10, y - 2, lh - 2, short)
         ]
         right = self.button_rects[-1][1].right - x0
         img = font.render(folder, True, GREY)

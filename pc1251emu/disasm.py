@@ -2,10 +2,13 @@
 
 命令の名前と形は tools/asm61860.py のアセンブラと同じ。相対ジャンプは向きを名前から外し、
 飛び先の番地を書く(アセンブラはJRNZなどの名前から向きを選ぶので、そのまま組み直せる)。
-番地と値は&なしの16進表記。
+番地と値は&なしの16進表記。DTCのあとの表は、手前のPTCで行の数がわかれば「DB」の行にする。
 """
 
+from collections.abc import Iterator
 from typing import NamedTuple
+
+from .i18n import tr
 
 # オペコード: (名前, 形)。形は "" なし、"n" 1バイト、"nm" 2バイト(上位が先)、
 # "r+" 前への相対、"r-" 後ろへの相対。LP・CAL・PTCは別に扱う
@@ -156,10 +159,15 @@ class Ins(NamedTuple):
     size: int
     name: str
     operand: str
-    target: int | None  # 飛び先(ジャンプと呼び出し)
+    target: int | None  # 飛び先(ジャンプと呼び出し、DTCの表の行)
+    note: str = ""  # 添え書き(DTCの表の行の行き先など)
 
     def text(self) -> str:
         return f"{self.name} {self.operand}".rstrip()
+
+    def line(self) -> str:
+        """添え書きまでつけた1行(.hexの「;」のあとに書く形)"""
+        return f"{self.text()} ; {self.note}" if self.note else self.text()
 
 
 def length(op: int) -> int:
@@ -200,6 +208,65 @@ def decode(read, addr: int) -> Ins:
         t = (base + b[0] if kind == "r+" else base - b[0]) & 0xFFFF
         return Ins(addr, 2, name, f"{t:04X}", t)
     return Ins(addr, 1, name, "", None)
+
+
+PTC, DTC = 0x7A, 0x69
+PTC_NEAR = 16  # DTCの何バイト手前までPTCを探すか
+
+
+def find_ptc(read, addr: int) -> int | None:
+    """addr番地のDTCの表の行の数(手前のPTCのh)。PTCからaddrまでのあいだの命令を順に読んで
+    ちょうどaddrに着き、あいだに飛ぶ命令がなければ、そのPTCを使う。見つからなければNone"""
+    for back in range(4, PTC_NEAR + 1):
+        p = (addr - back) & 0xFFFF
+        if read(p) != PTC:
+            continue
+        a = (p + 4) & 0xFFFF
+        while a != addr and (a - p) & 0xFFFF < back:
+            ins = decode(read, a)
+            if ins.target is not None or ins.name in ("RTN", "DTC", "???"):
+                break
+            a = (a + ins.size) & 0xFFFF
+        if a == addr:
+            return read((p + 1) & 0xFFFF)
+    return None
+
+
+def table(read, addr: int, rows: int) -> list[Ins]:
+    """addr番地(DTCの次)からのDTCの表。「値,行き先」の3バイトの行がrows行と、どれでも
+    ないときの行き先の2バイトの行"""
+    out = []
+    for i in range(rows):
+        a = (addr + 3 * i) & 0xFFFF
+        v, hi, lo = (read((a + k) & 0xFFFF) for k in range(3))
+        t = hi << 8 | lo
+        out.append(Ins(a, 3, "DB", f"{v:02X},{hi:02X},{lo:02X}", t, f"→{t:04X}"))
+    a = (addr + 3 * rows) & 0xFFFF
+    hi, lo = read(a), read((a + 1) & 0xFFFF)
+    t = hi << 8 | lo
+    out.append(Ins(a, 2, "DB", f"{hi:02X},{lo:02X}", t, tr("ほかは→{addr:04X}", addr=t)))
+    return out
+
+
+def lines(read, addr: int) -> Iterator[Ins]:
+    """addr番地から命令を順に読む。DTCのあとは、表の行の数がわかれば(読んできたPTCか、
+    すぐ手前のPTC)表の行を出す"""
+    rows: int | None = None
+    while True:
+        ins = decode(read, addr)
+        yield ins
+        addr = (addr + ins.size) & 0xFFFF
+        if ins.name == "PTC":
+            rows = read((ins.addr + 1) & 0xFFFF)
+        elif ins.name == "DTC":
+            n = rows if rows is not None else find_ptc(read, ins.addr)
+            rows = None
+            if n is not None:
+                for row in table(read, addr, n):
+                    yield row
+                    addr = (addr + row.size) & 0xFFFF
+        elif ins.target is not None or ins.name == "RTN":
+            rows = None  # 飛んだ先のDTCには、ここまでのPTCを使わない
 
 
 def is_call(read, addr: int) -> bool:

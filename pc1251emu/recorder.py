@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import display
 from .audio import RATE
+from .i18n import tr
 
 W, H = 1280, 720
 FPS = 30
@@ -55,7 +56,7 @@ def ffmpeg_exe() -> str:
 
         return imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError) as e:
-        raise OSError("ffmpegが見つかりません。ffmpegを入れてPATHに置くと録画できます") from e
+        raise OSError(tr("ffmpegが見つかりません。ffmpegを入れてPATHに置くと録画できます")) from e
 
 
 def _font(size: int):
@@ -152,7 +153,7 @@ class Recorder:
             try:
                 stdin.write(frame)
             except (BrokenPipeError, OSError) as e:
-                self.error = str(e) or "ffmpegが止まりました"
+                self.error = str(e) or tr("ffmpegが止まりました")
 
     @property
     def seconds(self) -> float:
@@ -162,8 +163,9 @@ class Recorder:
         """1フレームぶん。pictureは本体の絵(RGB、原寸)、pcmはそのあいだの音(16ビット)"""
         if len(picture) != self.frame_bytes:
             raise ValueError(
-                f"絵の大きさが違います({len(picture)}バイト、{self.frame_bytes}バイトのはず)"
-            )
+                tr("絵の大きさが違います({size}バイト、{want}バイトのはず)",
+                   size=len(picture), want=self.frame_bytes)
+            )  # fmt: skip
         self.wav.writeframes(pcm)
         self.samples += len(pcm) // 2
         while self.frames < self.samples // SPF:
@@ -183,7 +185,7 @@ class Recorder:
         self.wav.close()
         if self.error or code != 0:
             shutil.rmtree(self.work, ignore_errors=True)
-            raise OSError(self.error or f"ffmpegが終了コード{code}で止まりました")
+            raise OSError(self.error or tr("ffmpegが終了コード{code}で止まりました", code=code))
         done = subprocess.run(
             [
                 self.exe, "-y", "-loglevel", "error", "-i", self.video, "-i", self.audio,
@@ -194,7 +196,7 @@ class Recorder:
         )  # fmt: skip
         shutil.rmtree(self.work, ignore_errors=True)
         if done.returncode != 0:
-            raise OSError(done.stderr.strip() or "動画を仕上げられませんでした")
+            raise OSError(done.stderr.strip() or tr("動画を仕上げられませんでした"))
         return self.path
 
     def abort(self) -> None:

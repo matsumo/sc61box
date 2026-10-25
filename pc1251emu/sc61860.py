@@ -18,6 +18,8 @@ READ・LOOP・WAITの根拠は『PC-インタープリタを読む』1.4節、CU
 読み書きに合わせ、PockEmulとPokecomGOの実装とも比べた。
 """
 
+from .i18n import tr
+
 A, B, I, J = 2, 3, 0, 1
 CUP_STEP = 4  # CUP・CDNでPを1つ進めるのにかかるサイクル
 XL, XH, YL, YH = 4, 5, 6, 7
@@ -129,24 +131,24 @@ class SC61860:
     def check_state(self, state: object) -> dict:
         """stateの値を確かめて、set_stateに渡せる形にして返す。おかしければValueError"""
         if not isinstance(state, dict):
-            raise ValueError("CPUの状態がありません")
+            raise ValueError(tr("CPUの状態がありません"))
         out: dict[str, int | bytes] = {}
         for name in self.REGISTERS:
             v = state.get(name)
             if type(v) is not int or v < 0:
-                raise ValueError(f"CPUの{name}がおかしい値です")
+                raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
             if name == "_frac":
                 if v >= self.ratio[1]:
-                    raise ValueError("CPUの_fracがおかしい値です")
+                    raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
             elif v > self._LIMITS.get(name, v):
-                raise ValueError(f"CPUの{name}がおかしい値です")
+                raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
             out[name] = v
         try:
             ram = bytes.fromhex(state.get("ram", ""))
         except (TypeError, ValueError):
             ram = b""
         if len(ram) != len(self.ram):
-            raise ValueError("CPUの内部RAMの大きさが違います")
+            raise ValueError(tr("CPUの内部RAMの大きさが違います"))
         out["ram"] = ram
         return out
 
@@ -192,23 +194,43 @@ class SC61860:
         self._frac -= q * den
         return q
 
-    def run(self, cycles: int, guard: bytearray | None = None) -> int:
+    def run(
+        self, cycles: int, guard: bytearray | None = None, seen: bytearray | None = None
+    ) -> int:
         """cyclesぶん実行し、実際に進んだサイクル数を返す。ポートへの書き込みの時刻を
         周辺がcyclesで読むので、cyclesは命令ごとに進める。
 
         guard(番地ごとのバイト列)を渡すと、命令を読む前にPCの番地を見て、0でなければ
-        その命令を実行せずに止まり、trappedをTrueにする(マシン語の作業欄の止める所)"""
+        その命令を実行せずに止まり、trappedをTrueにする(マシン語の作業欄の止める所)。
+        seen(番地ごとのバイト列)を渡すと、命令を読んだPCの番地に1を書く(作業欄の
+        逆アセンブルで、実行した命令の印にする)"""
         ops = self._ops
         fetch = self._fetch
         start = self.cycles
         end = start + cycles
         self.trapped = False
+        if guard is not None and seen is not None:
+            ticks = self._ticks
+            while self.cycles < end:
+                pc = self.pc
+                if guard[pc]:
+                    self.trapped = True
+                    break
+                seen[pc] = 1
+                self.cycles += ticks(ops[fetch()]())
+            return self.cycles - start
         if guard is not None:
             ticks = self._ticks
             while self.cycles < end:
                 if guard[self.pc]:
                     self.trapped = True
                     break
+                self.cycles += ticks(ops[fetch()]())
+            return self.cycles - start
+        if seen is not None:
+            ticks = self._ticks
+            while self.cycles < end:
+                seen[self.pc] = 1
                 self.cycles += ticks(ops[fetch()]())
             return self.cycles - start
         if self.ratio[0] == self.ratio[1]:

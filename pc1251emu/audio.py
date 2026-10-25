@@ -17,6 +17,7 @@ import re
 import sys
 from array import array
 
+from .i18n import tr
 from .machine import CLOCK
 
 RATE = 44100  # 22050Hzでは方形波の高調波の折り返しが耳につく
@@ -164,7 +165,7 @@ def _sdl_library() -> ctypes.CDLL:
                 return ctypes.CDLL(path)
     found = ctypes.util.find_library("SDL2")
     if found is None:
-        raise OSError("SDL2のライブラリが見つかりません")
+        raise OSError(tr("SDL2のライブラリが見つかりません"))
     return ctypes.CDLL(found)
 
 
@@ -253,7 +254,7 @@ class MixerOutput:
         pygame.mixer.init(RATE, -16, 1, 512, allowedchanges=0)
         freq, _, channels = pygame.mixer.get_init()
         if freq != RATE:
-            raise OSError(f"ミキサーが{freq}Hzで開かれました")
+            raise OSError(tr("ミキサーが{freq}Hzで開かれました", freq=freq))
         self.channel = pygame.mixer.Channel(0)
         self.channels = channels
         self.wait = bytearray()
@@ -300,9 +301,11 @@ def open_output() -> "SoundQueue | MixerOutput | None":
     try:
         return SoundQueue()
     except (OSError, AttributeError) as e:
-        print(f"SDLの待ち行列が使えないので、mixerで鳴らします({e})", file=sys.stderr)
+        print(
+            tr("SDLの待ち行列が使えないので、mixerで鳴らします({error})", error=e), file=sys.stderr
+        )
     try:
         return MixerOutput()
     except (OSError, pygame.error) as e:
-        print(f"音を切ります({e})", file=sys.stderr)
+        print(tr("音を切ります({error})", error=e), file=sys.stderr)
     return None

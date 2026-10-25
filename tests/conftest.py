@@ -7,6 +7,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# 試験は日本語の画面で確かめる(動かすパソコンのロケールによらない)
+os.environ["PC1251_LANG"] = "ja"
+
 from pc1251emu.machine import RomNotFound, find_rom  # noqa: E402
 
 
@@ -44,12 +47,22 @@ def _own_state_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path_factory.mktemp("programs")))
 
 
+@pytest.fixture(autouse=True)
+def _japanese():
+    """画面の言語を、試験ごとに日本語に戻す(英語に切り替える試験のあとに残さない)"""
+    from pc1251emu import i18n
+
+    i18n.set_language("ja")
+    yield
+    i18n.set_language("ja")
+
+
 def pytest_collection_modifyitems(config, items):
     from test_basic import DUMP
 
     for item in items:
         if (
-            item.module.__name__ in ("test_cpu", "test_workbench")
+            item.module.__name__ in ("test_cpu", "test_workbench", "test_i18n")
             or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
         ):
             continue

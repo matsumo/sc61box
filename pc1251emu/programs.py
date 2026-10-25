@@ -36,6 +36,9 @@
                           PocketToolsのbin2wavの.binと同じ)
     # after: code.hex     実行の文字列を打ったあとで書き込むダンプ(BASICでDIMなどをしてから
                           マシン語を置く記事用)。「# after: code.bin &C300」も使える
+    # data: C100-C17F     命令ではなくデータの範囲(逆アセンブルでDBの行にする)。「,」で区切って
+                          いくつも書ける。終わりを書かずに「C100」とすると、そこからデータ
+                          (次の指定か、実行した命令の手前まで)
     # model: 1251,1245    動く機種(「,」で区切る)。書かなければ置いたフォルダで決まる。
                           ほかの機種では一覧に出ず、開いても読み込まない
 """
@@ -44,6 +47,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .i18n import tr
 from .keytype import stored_len
 from .machine import MODELS
 
@@ -124,6 +128,8 @@ class Program:
     links: list[str] = field(
         default_factory=list
     )  # 「after: code.hex」など、ダンプの指示(書き出し用)
+    # # data: の範囲(始め, 終わりの次)。終わりを書いていなければ(始め, None)
+    data: list[tuple[int, int | None]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -190,8 +196,9 @@ class Program:
         if self.runs_on(model):
             return self.title
         if not self.models:
-            return self.title + "(番地がどの機種のRAMにも収まらない)"
-        return self.title + "(" + "・".join(f"PC-{m}" for m in self.models) + "用)"
+            return tr("{title}(番地がどの機種のRAMにも収まらない)", title=self.title)
+        models = tr("・").join(f"PC-{m}" for m in self.models)
+        return tr("{title}({models}用)", title=self.title, models=models)
 
     @property
     def kinds(self) -> str:
@@ -215,9 +222,40 @@ def _directive(line: str) -> tuple[str, str] | None:
         return None
     key, val = body.split(":", 1)
     key = key.strip().lower()
-    if key in ("title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom"):
+    if key in (
+        "title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom", "data",
+    ):  # fmt: skip
         return key, val.strip()
     return None
+
+
+DATA_RE = re.compile(r"&?([0-9A-Fa-f]{1,4})(?:\s*[-〜]\s*&?([0-9A-Fa-f]{1,4}))?")
+
+
+def parse_data(text: str) -> tuple[list[tuple[int, int | None]], str]:
+    """# data: の値(「C100-C17F, C200」)を読む。範囲は(始め, 終わりの次)、終わりのない
+    番地は(番地, None)。読めない所があれば、その文字も返す(なければ空)"""
+    spans: list[tuple[int, int | None]] = []
+    for item in text.replace("、", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        hit = DATA_RE.fullmatch(item)
+        if hit is None:
+            return spans, item
+        lo = int(hit[1], 16)
+        hi = int(hit[2], 16) + 1 if hit[2] else None
+        if hi is not None and hi <= lo:
+            return spans, item
+        spans.append((lo, hi))
+    return spans, ""
+
+
+def data_line(spans: list[tuple[int, int]]) -> str:
+    """データの範囲(始め, 終わりの次)を# data: の行にする(なければ空)"""
+    if not spans:
+        return ""
+    return "# data: " + ", ".join(f"{lo:04X}-{hi - 1:04X}" for lo, hi in spans) + "\n"
 
 
 # YASM61860の16進ダンプの行(「c000 : 12 34 … : 5a」)。行の番地は8の倍数に切り下げてあり、
@@ -249,10 +287,16 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
                     addr += pad // 3
             data = bytes.fromhex(body.split(":")[0].replace(" ", ""))
         except ValueError:
-            errors.append(f"{where}{n}行目を16進ダンプとして読めない: {line[:30]}")
+            errors.append(
+                tr("{where}{line}行目を16進ダンプとして読めない: {text}",
+                   where=where, line=n, text=line[:30])
+            )  # fmt: skip
             continue
         if addr + len(data) > 0x10000:
-            errors.append(f"{where}{n}行目の番地がFFFFを越える: {line[:30]}")
+            errors.append(
+                tr("{where}{line}行目の番地がFFFFを越える: {text}",
+                   where=where, line=n, text=line[:30])
+            )  # fmt: skip
             continue
         blocks.append((addr, data))
     return blocks, errors
@@ -277,9 +321,11 @@ def read_bin(path: str, addr: int, where: str = "") -> tuple[list[tuple[int, byt
     except OSError as e:
         return [], [f"{where}{e}"]
     if not data:
-        return [], [f"{where}中身が空"]
+        return [], [tr("{where}中身が空", where=where)]
     if addr + len(data) > 0x10000:
-        return [], [f"{where}&{addr:04X}から{len(data)}バイトでは、&FFFFを越える"]
+        why = tr("{where}&{addr:04X}から{n}バイトでは、&FFFFを越える",
+                 where=where, addr=addr, n=len(data))  # fmt: skip
+        return [], [why]
     return [(addr, data)], []
 
 
@@ -292,7 +338,9 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
         name, addr = parts[0], parse_addr(parts[1])
     is_bin = name.lower().endswith(".bin")
     if is_bin and addr is None:
-        prog.errors.append(f"# {key}: {name}に置く番地がない(例:# bin: {name} &C300)")
+        prog.errors.append(
+            tr("# {key}: {name}に置く番地がない(例:# bin: {name} &C300)", key=key, name=name)
+        )
         return
     sub = model_dir(folder_model(os.path.join(near, name)) or "-")
     places = [near] + [os.path.join(d, sub) for d in library_dirs()] + library_dirs()
@@ -309,13 +357,28 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
                     try:
                         text = open(p, encoding="utf-8").read()
                     except (OSError, UnicodeDecodeError) as e:
-                        prog.errors.append(f"# {key}: {name}を読めない({e})")
+                        prog.errors.append(
+                            tr("# {key}: {name}を読めない({error})", key=key, name=name, error=e)
+                        )
                         return
                     blocks, errors = parse_hex(text, name + " ")
+                    # 使うダンプに書いた# data: の範囲も取り込む(ほかの指示は使う側で書く)
+                    for line in text.splitlines():
+                        d = _directive(line.strip()) if line.strip().startswith("#") else None
+                        if d and d[0] == "data":
+                            _add_data(prog, d[1], name)
                 (prog.after if key == "after" else prog.blocks).extend(blocks)
                 prog.errors.extend(errors)
             return
-    prog.errors.append(f"# {key}: {name}が見つからない")
+    prog.errors.append(tr("# {key}: {name}が見つからない", key=key, name=name))
+
+
+def _add_data(prog: Program, value: str, file: str) -> None:
+    """# data: の値を読んでprog.dataに足す。読めなければprog.errorsに足す"""
+    spans, bad = parse_data(value)
+    prog.data.extend(spans)
+    if bad:
+        prog.errors.append(tr("{file}: # data: の{text}が読めない", file=file, text=bad))
 
 
 def _read_into(prog: Program, path: str) -> None:
@@ -330,6 +393,8 @@ def _read_into(prog: Program, path: str) -> None:
             d = _directive(line.strip())
             if d and d[0] in ("hex", "bin", "after"):
                 _add_hex(prog, d[1], os.path.dirname(path), d[0])
+            elif d and d[0] == "data":
+                _add_data(prog, d[1], os.path.basename(path))
             elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:
                 old = getattr(prog, d[0])
                 setattr(prog, d[0], old + "\n" + d[1] if old else d[1])

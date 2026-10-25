@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "pc1251-emu"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "imageio-ffmpeg" },

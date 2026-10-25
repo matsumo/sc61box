@@ -64,15 +64,22 @@ uv run pc1251 --model 1245           # start as a PC-1245
 uv run pc1251 --model 1261           # start as a PC-1261 (1260 and 1262 also work)
 uv run pc1251 --model 1350           # start as a PC-1350 (--card 16 inserts a 16 KB RAM card)
 uv run pc1251 --model 1350 --overseas  # PC-1350 wired as the export model (lowercase letters instead of kana)
+uv run pc1251 --lang en              # English screen (--lang ja for Japanese)
 uv run pc1251 --help                 # list the options
 uv run pc1251 --version              # print the version (please include it in bug reports)
 ```
 
 On exit the RAM is saved to `~/.pc1251/ram.bin` (`ram-1245.bin` for the PC-1245, `ram-1261.bin` for the PC-1261, `ram-1350.bin` for the PC-1350) and restored at the next start. Without a ROM it goes to a separate file such as `ram-1251-norom.bin`.
 
+### Display language
+
+The screen text can be English or Japanese. Start with `--lang en` (English) or `--lang ja` (Japanese), or set the environment variable `PC1251_LANG` to `en` or `ja`. Without either, the emulator uses the language last chosen with the "日本語" item in the "View & Input" menu ("English" on the Japanese screen); that item switches the language at once and is remembered for the next start.
+
+If no language was ever chosen from the menu, it is decided at start-up: a locale (the environment variables `LC_ALL`, `LC_MESSAGES` and `LANG`) starting with `ja` gives Japanese and any other locale English. Without a locale, the language set in System Settings is used on macOS, and the display language on Windows. If nothing is known, the screen is Japanese. This README quotes the labels of the English screen; things that belong to the machine (key tops, the LCD, BASIC keywords) and the titles of the bundled programs stay as they are.
+
 ### Program files
 
-Programs put in `~/.pc1251/programs/` appear in the program list (Cmd+O, or Ctrl+O on Windows). Clicking a row only selects it, even if it is already selected; the buttons at the bottom load it: "読み込んで実行" loads and runs the program (also Enter) and "読み込むだけ" only loads it (also Shift+Enter). The file name, the models it runs on and the `# help:` text of the selected row appear below the list. You can also drop a file onto the window. If a file has unreadable lines, a missing or unreadable dump file, a dump that writes outside RAM, BASIC too large for RAM, or a line too long to be typed without losing part of it, nothing is written and a message appears at the bottom of the window. If BASIC that is typed in runs out of room part-way, or a line does not end up as expected, the run command and later dumps are skipped. The state just before loading is kept, and "プログラムを読み込む前に戻す" in the "本体" menu goes back to it, together with the program name and directives used for exporting. `programs/` has samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
+Programs put in `~/.pc1251/programs/` appear in the program list (Cmd+O, or Ctrl+O on Windows). Clicking a row only selects it, even if it is already selected; the buttons at the bottom load it: "Load and run" loads and runs the program (also Enter) and "Load only" only loads it (also Shift+Enter). The file name, the models it runs on and the `# help:` text of the selected row appear below the list. You can also drop a file onto the window. If a file has unreadable lines, a missing or unreadable dump file, a dump that writes outside RAM, BASIC too large for RAM, or a line too long to be typed without losing part of it, nothing is written and a message appears at the bottom of the window. If BASIC that is typed in runs out of room part-way, or a line does not end up as expected, the run command and later dumps are skipped. The state just before loading is kept, and "Undo program load" in the "Machine" menu goes back to it, together with the program name and directives used for exporting. `programs/` has samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
 
 Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form one program: the dump is written first, then the BASIC goes in.
 
@@ -82,7 +89,7 @@ Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form
 | `.hex` | hex dump, one `address data` line after another | written straight into RAM |
 | `.bin` | machine-code bytes only | written at the address given by a `# bin:` line in the `.bas` |
 
-A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with ".hexに書き出す". `uv run pc1251 --export folder` exports from the saved RAM.
+A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with "Export .hex". `uv run pc1251 --export folder` exports from the saved RAM.
 
 #### BASIC files (.bas)
 
@@ -113,6 +120,7 @@ Lines starting with `#` are comments, and can carry these settings.
 | `# setup: commands` | commands typed in PRO mode after `NEW`, before the BASIC goes in. With this, the dumps are written after `NEW` and these commands |
 | `# after: file` | dump to write after the run text is typed. For a `.bin`, add the address: `# after: code.bin &C400` |
 | `# norom: note` | note shown when the program is loaded without a ROM. `# norom: off` keeps the program out of the list without a ROM |
+| `# data: ranges` | ranges that are data, not code, e.g. `# data: C100-C17F, C200-C20F` (end address included). The workbench disassembly shows them as `DB` rows; ranges you mark as data in the workbench are written here when you export a `.hex` |
 | `# model: models` | models it runs on (see [Where to put programs](#where-to-put-programs)) |
 
 - Addresses can be written as `&C300`, `0xC300` or `C300`.
@@ -130,7 +138,7 @@ Lines starting with `#` are comments, and can carry these settings.
 
 - Programs in `pc1251/` also appear on the PC-1250 and PC-1255, and those in `pc1261/` on the PC-1260 and PC-1262, if their machine code fits in RAM and does not overlap the BASIC area.
 - Files directly in the program folder without `# model:` are taken to work on the models whose RAM or LCD holds every address they load machine code to and every literal `POKE` address. Machine code at C100 means PC-1251 and PC-1245; with neither, every model.
-- A program for another model is not listed. Opening it by path reports "(PC-1251用)" and does not load it.
+- A program for another model is not listed. Opening it by path reports "(for PC-1251)" and does not load it.
 - If a program with the same `# title:` is in the current model's folder, only that one is listed, so a program written separately for each model can sit under the same name in each folder.
 
 ### Assembler
@@ -176,13 +184,13 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
 
-The "● 録画" button at the right end of the bar or Shift+Cmd+R (Shift+Ctrl+R on Windows) starts recording; while recording, the button shows "録画中" with the elapsed time, and pressing it shows "録画を止めて保存" and "録画を一時停止する" just above it. Nothing is recorded while paused (also Shift+Cmd+P), and "録画を再開する" continues. Stopping saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. The ffmpeg used to make the video comes with the imageio-ffmpeg library, which bundles it only for Windows, macOS and Linux (x86_64 and aarch64). Elsewhere the emulator still installs and runs, but recording needs an ffmpeg on the PATH; without one, recording does not start and a warning that ffmpeg was not found appears at the bottom of the window.
+The "● Record" button at the right end of the bar or Shift+Cmd+R (Shift+Ctrl+R on Windows) starts recording; while recording, the button shows "Recording" with the elapsed time, and pressing it shows "Stop and save recording" and "Pause recording" just above it. Nothing is recorded while paused (also Shift+Cmd+P), and "Resume recording" continues. Stopping saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. The ffmpeg used to make the video comes with the imageio-ffmpeg library, which bundles it only for Windows, macOS and Linux (x86_64 and aarch64). Elsewhere the emulator still installs and runs, but recording needs an ffmpeg on the PATH; without one, recording does not start and a warning that ffmpeg was not found appears at the bottom of the window.
 
-Shift+Cmd+S (Shift+Ctrl+S on Windows) saves the RAM, the CPU registers, ports, timers and switch to `~/.pc1251/state-<model>.json` (one per model), and Shift+Cmd+L goes back to it, for example in the middle of a game or to retake a recording. Start with `--state file` to begin from a saved state. Saving again keeps the previous state under the same name with `.bak` added. The export information of the last loaded program (title, `# run:`, `# help:`, dump directives and so on) is saved too and comes back with the state, even if the original file has been edited since. The item "保存した状態に戻す" in the "本体" menu shows when the state was saved. The tape position and text still being typed from a file are not saved.
+Shift+Cmd+S (Shift+Ctrl+S on Windows) saves the RAM, the CPU registers, ports, timers and switch to `~/.pc1251/state-<model>.json` (one per model), and Shift+Cmd+L goes back to it, for example in the middle of a game or to retake a recording. Start with `--state file` to begin from a saved state. Saving again keeps the previous state under the same name with `.bak` added. The export information of the last loaded program (title, `# run:`, `# help:`, dump directives and so on) is saved too and comes back with the state, even if the original file has been edited since. The item "Load state" in the "Machine" menu shows when the state was saved. The tape position and text still being typed from a file are not saved.
 
-Below the calculator is a bar. The buttons "プログラム" (list, export, paste), "本体" (save and restore the state, undo loading, switch, RESET), and "表示・入力" (key help, arrow keys, screenshot, printout) each open a short menu just above the button. With a menu open, clicking another button of the bar does that button's action, and ← → move to the neighbouring menu. "実行を一時停止" pauses execution (it turns into "実行を再開"), and "速さ" shows the current speed and lets you pick one. The "● 録画" button at the right end starts, pauses and stops recording. Hovering over a button shows what it does and its shortcut. Right-click opens a short menu with pausing execution, the program list, screenshot and key help (on the paper, the paper actions). The right end of the bar shows the model, the last loaded program and any setting that differs from the default (arrows as number keys, tape). Turn off Japanese input before typing.
+Below the calculator is a bar. The buttons "Programs" (list, export, paste), "Machine" (save and load the state, undo loading, switch, RESET), and "View & Input" (key help, arrow keys, screenshot, printout, display language) each open a short menu just above the button. With a menu open, clicking another button of the bar does that button's action, and ← → move to the neighbouring menu. "Pause" pauses execution (it turns into "Resume"), and "Speed" shows the current speed and lets you pick one. The "● Record" button at the right end starts, pauses and stops recording. Hovering over a button shows what it does and its shortcut. Right-click opens a short menu with pausing execution, the program list, screenshot and key help (on the paper, the paper actions). The right end of the bar shows the model, the last loaded program and any setting that differs from the default (arrows as number keys, tape). Turn off Japanese input before typing.
 
-In the program list, click the box at the top or type `/`, then type part of a name to show only the programs that match. The `# help:` text of the loaded program can be shown again with "読み込んだプログラムの説明" in the "プログラム" menu. Esc while a program is being loaded (typed in) stops loading.
+In the program list, click the box at the top or type `/`, then type part of a name to show only the programs that match. The `# help:` text of the loaded program can be shown again with "Help for loaded program" in the "Programs" menu. Esc while a program is being loaded (typed in) stops loading.
 
 ### Breakout
 
@@ -203,8 +211,8 @@ Start the game from the program list, then hold down the number key (1–6) of t
 A printer (a thermal printer that prints 5×7 dot characters) is always connected. When a program prints with `LPRINT` or `LLIST`, a strip of paper comes out below the calculator and feeds a line at a time. On the PC-1251 and PC-1245, pressing SHIFT+ENTER (P↔NP) to show P on the LCD also prints calculations typed by hand.
 
 - Scroll with the mouse wheel over the paper to see earlier lines.
-- The printout is saved automatically as a picture of the paper in the program folder as `print-<date>-<time>.png`, rewritten whenever printing pauses for a second. The file location is shown to the left of the paper; click it, or choose "印字の保存先を開く" in the menu, to open the folder.
-- The × to the right of the paper, or "プリンタの紙をしまう" in the "表示・入力" menu, puts the paper away. That ends the sheet; the next printout starts a new sheet and a new file.
+- The printout is saved automatically as a picture of the paper in the program folder as `print-<date>-<time>.png`, rewritten whenever printing pauses for a second. The file location is shown to the left of the paper; click it, or choose "Open printout folder" in the menu, to open the folder.
+- The × to the right of the paper, or "Put the paper away" in the "View & Input" menu, puts the paper away. That ends the sheet; the next printout starts a new sheet and a new file.
 
 ### Cassette audio (wav)
 
@@ -243,7 +251,7 @@ The program list, exporting, shortcuts and running programs with DEF work as on 
 - The LCD has 16 characters. Anything written to the right of the 16th is not visible, so some PC-1251 programs show only part of their display.
 - The breakout sample loads its PC-1245 version (`programs/pc1245/`): a 75-column playing field, the score shown only after the game, and no blinking brick.
 - RAM is 2 KB, and 1486 bytes are free for programs (the value of `MEM`).
-- The mode switch has three positions, PRO, RUN and OFF; there is no RSV. Cmd+↑↓ (Ctrl+↑↓) and the "本体" menu move only between those three.
+- The mode switch has three positions, PRO, RUN and OFF; there is no RSV. Cmd+↑↓ (Ctrl+↑↓) and the "Machine" menu move only between those three.
 - On the A–= and Z–SPC rows, SHIFT followed by a key enters the BASIC keyword printed above it (INPUT, IF, THEN, …, PRINT, USING, …, CLOAD).
 - Parentheses are SHIFT+1 and SHIFT+2 (↓ and ↑ on the PC-1251). Typing `(` or `)` on the PC keyboard is translated into these.
 - RAM is saved to `~/.pc1251/ram-1245.bin` on exit, separately from the PC-1251's `ram.bin`.

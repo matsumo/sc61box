@@ -30,6 +30,7 @@ import json
 import os
 from dataclasses import dataclass, replace
 
+from .i18n import tr
 from .printer import CHARS_1350, Printer
 from .sc61860 import SC61860, Bus
 
@@ -277,10 +278,10 @@ def find_rom(name: str) -> str:
     model = name[4:-4]  # "cpu-1251.rom"の"1251"
     kb = rom_size(f"bas-{model}.rom") // 1024
     raise RomNotFound(
-        f"ROMのファイル{name}が見つかりません。実機から読み出した内部ROM(cpu-{model}.rom、"
-        f"8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数PC1251_ROMに"
-        "置き場所を指定してください(READMEの「ROMの用意」)。"
-    )
+        tr("ROMのファイル{name}が見つかりません。実機から読み出した内部ROM(cpu-{model}.rom、"
+           "8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数PC1251_ROMに"
+           "置き場所を指定してください(READMEの「ROMの用意」)。", name=name, model=model, kb=kb)
+    )  # fmt: skip
 
 
 def rom_size(name: str) -> int:
@@ -297,9 +298,9 @@ def read_rom(name: str) -> bytes:
     size = rom_size(name)
     if len(data) < size:
         raise RomNotFound(
-            f"{path}は{len(data)}バイトしかありません。"
-            f"{name}は{size}バイト({size // 1024}KB)必要です。"
-        )
+            tr("{path}は{have}バイトしかありません。{name}は{size}バイト({kb}KB)必要です。",
+               path=path, have=len(data), name=name, size=size, kb=size // 1024)
+        )  # fmt: skip
     return data
 
 
@@ -311,7 +312,7 @@ def new_machine(
     PC-1350は液晶のつくりが違うので、ROMなしでは作れない)"""
     if MODELS[model].family == "1350":
         if not rom:
-            raise ValueError("PC-1350はROMなしでは動かせません")
+            raise ValueError(tr("PC-1350はROMなしでは動かせません"))
         return PC1350(model=model, card=card, overseas=overseas)
     if not rom:
         m = MODELS[model]
@@ -520,9 +521,11 @@ class PC1251(Bus):
         return t
 
     # ---- 実行 ----
-    def run(self, cycles: int, guard: bytearray | None = None) -> bool:
-        """cyclesぶん動かし、2msごとにタイマを進める。guardはSC61860.runと同じで、
-        その番地で止まったらTrueを返す"""
+    def run(
+        self, cycles: int, guard: bytearray | None = None, seen: bytearray | None = None
+    ) -> bool:
+        """cyclesぶん動かし、2msごとにタイマを進める。guardとseenはSC61860.runと同じで、
+        guardの番地で止まったらTrueを返す"""
         cpu = self.cpu
         cpu.trapped = False
         while cycles > 0:
@@ -538,7 +541,7 @@ class PC1251(Bus):
                 used = chunk
                 cpu.cycles += used
             else:
-                used = cpu.run(chunk, guard)
+                used = cpu.run(chunk, guard, seen)
             cycles -= used
             self._tick(used)
             if cpu.trapped:
@@ -684,7 +687,7 @@ class PC1251(Bus):
             try:
                 state = json.load(f)
             except json.JSONDecodeError as e:
-                raise ValueError(f"状態のファイルとして読めません({e})") from e
+                raise ValueError(tr("状態のファイルとして読めません({error})", error=e)) from e
         self.restore(state)
         extra = state.get("app")
         return extra if isinstance(extra, dict) else None
@@ -692,21 +695,21 @@ class PC1251(Bus):
     def restore(self, state: object) -> None:
         """snapshotで取った状態に戻す。合わなければValueErrorで、いまの状態には手を付けない"""
         if not isinstance(state, dict) or state.get("format") != self.STATE_FORMAT:
-            raise ValueError("状態のファイルとして読めません")
+            raise ValueError(tr("状態のファイルとして読めません"))
         key = self._state_key()
         if {k: state.get(k) for k in key} != key:
-            raise ValueError(f"ほかの機種(PC-{state.get('model')})の状態です")
+            raise ValueError(tr("ほかの機種(PC-{model})の状態です", model=state.get("model")))
         if "rom" in state and state["rom"] != self._rom_digest():
-            raise ValueError("ROMが保存したときと違います")
+            raise ValueError(tr("ROMが保存したときと違います"))
         try:
             mem = base64.b64decode(state.get("mem", ""), validate=True)
         except (TypeError, ValueError):
             mem = b""
         if len(mem) != len(self.mem):
-            raise ValueError("メモリの大きさが違います")
+            raise ValueError(tr("メモリの大きさが違います"))
         fields = state.get("machine")
         if not isinstance(fields, dict):
-            raise ValueError("本体の状態がありません")
+            raise ValueError(tr("本体の状態がありません"))
         values = {name: self._check_field(name, fields.get(name)) for name in self.STATE_FIELDS}
         cpu = self.cpu.check_state(state.get("cpu"))
         # ここから先は失敗しない
@@ -732,7 +735,7 @@ class PC1251(Bus):
         else:
             ok = type(v) is int and v >= 0 and (name not in self.PORTS or v <= 0xFF)
         if not ok:
-            raise ValueError(f"本体の{name}がおかしい値です")
+            raise ValueError(tr("本体の{name}がおかしい値です", name=name))
         return v
 
     def _writable_ranges(self) -> list[tuple[int, int]]:
@@ -963,11 +966,13 @@ class PC1350(PC1251):
         m = self.mem
         return {name for name, (a, bit) in SYMBOLS_1350.items() if m[a] & bit}
 
-    def run(self, cycles: int, guard: bytearray | None = None) -> bool:
+    def run(
+        self, cycles: int, guard: bytearray | None = None, seen: bytearray | None = None
+    ) -> bool:
         if self.mode == "OFF":  # スイッチが切れているあいだはONキーでも入らない
             self.power = False
             return False
-        return super().run(cycles, guard)
+        return super().run(cycles, guard, seen)
 
     # ROMの電源を切る手続き。内部RAMの20hに5A、21h〜27hにA5の印を書いてから電源を切る
     OFF_ROUTINE = 0x04BF
