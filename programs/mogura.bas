@@ -1,4 +1,6 @@
 # title: もぐらたたき(PC-インタープリタ)
+# norom: off
+# model: 1251,1245
 # hex: pcint.hex
 # run: RUN 900
 # PiO 1986年8月号「PC-インタープリタ」のリスト2。1〜6の穴からもぐらが出るので、

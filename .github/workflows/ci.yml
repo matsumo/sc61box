@@ -16,10 +16,10 @@ jobs:
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2  # setup-uvは「v10」のような版の頭だけのタグを出していない
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uvx pyrefly check
+      - run: uvx pyrefly@1.4.0 check  # 版を決めておく(新しい版で検査が増えて急に落ちないように)
       - run: uv run pytest -q tests

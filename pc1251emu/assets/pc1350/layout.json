@@ -1,0 +1,17 @@
+{
+ "size": [1600, 641],
+ "cells": 150,
+ "lines": 4,
+ "line_rows": 8,
+ "line_pitch": 40,
+ "cell_width": 1,
+ "mat": [185, 130],
+ "dot": [4, 4],
+ "pitch": [5, 5],
+ "cell_pitch": 5,
+ "ann": [136, 16],
+ "switch_xy": [1498, 87],
+ "switch_area": [1491, 84, 1561, 153],
+ "switch_stops": [["ON", 102], ["OFF", 133]],
+ "corner": 20
+}

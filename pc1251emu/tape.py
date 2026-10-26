@@ -1,20 +1,19 @@
 """カセットの音(wav)の書き出しと読み込み
 
-書き出しは、ROMのCSAVEがCポートに出す音をそのまま録る。CSAVEは、Cポートの
-ビット4〜6を3(内蔵の4kHzの発振)と2(2kHzの発振)に切り替えながら、2msの印を
-1つ待つごとに1ビットを出す。CPUのサイクルで時刻を持っているので、切り替えの
-時刻から波形を作り直せる。CLOCKの192kHzは48kHzのちょうど4倍なので、標本1つが
-4サイクルにあたり、2kHzは24標本、4kHzは12標本の周期になる。
+書き出しは、CSAVEがCポートのビット4〜6を3(内蔵の4kHzの発振)と2(2kHzの発振)に
+切り替える時刻から波形を作る。192kHzのCLOCKは48kHzの4倍なので、標本1つが4サイクル。
 
-読み込みは、wavの波形を0と1の列に直し、ROMがXin(TESTのビット7、CUP・CDN)を
-読んだときの時刻の値を返す。再生はROMが初めてXinを読んだときに始まる。
+読み込みは、wavの波形を0と1の列に直し、ROMがXin(TESTのビット7、CUP・CDN)を読んだ
+時刻の値を返す。再生はROMが初めてXinを読んだときに始まる。
 """
 
 import bisect
+import os
 import wave
 from array import array
 
-from .machine import CLOCK
+from .autotype import Typer
+from .machine import CLOCK, new_machine
 
 RATE = 48000
 SPS = CLOCK // RATE  # 1標本あたりのサイクル(4)
@@ -38,13 +37,14 @@ def render(events: list[tuple[int, int]], c0: int, c1: int) -> array:
             mode = ev[k][1]
             k += 1
         period = OSC.get(mode)
-        if period:  # 発振は止まらずに回っているので、位相は通しのサイクルで決まる
+        if period:  # 発振は回り続けているので、位相は通しのサイクルで決まる
             out[i] = AMP if c % period < period // 2 else -AMP
     return out
 
 
 def write_wav(path: str, samples: array) -> None:
-    with wave.open(path, "wb") as w:
+    # ファイルを先に開く(開けないときに、作りかけのwave.Wave_writeが後始末で警告を出さない)
+    with open(path, "wb") as f, wave.open(f, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(RATE)
@@ -52,11 +52,10 @@ def write_wav(path: str, samples: array) -> None:
 
 
 class TapeOut:
-    """エミュレータを動かしているあいだ、Cポートに出る音を見張り、CSAVEの音を取り出す。
+    """Cポートに出る音を見張り、CSAVEの音を取り出す。
 
-    内蔵の発振(4kHzか2kHz)が鳴り始めたところから、音が止まって1秒たつまでを
-    ひと続きとみる。BEEPも同じ4kHzの発振を使うので、2秒以上続き、2kHzへの
-    切り替えが何度もあるものだけをCSAVEの音として返す(BEEPは2kHzを使わない)。
+    内蔵の発振が鳴り始めてから、音が止まって1秒たつまでをひと続きとみる。BEEPも4kHzの
+    発振を使うので、2秒以上続き、2kHzへの切り替えが何度もあるものだけをCSAVEの音とする。
     """
 
     QUIET = CLOCK  # 音が止まってからこれだけたったら、ひと続きの終わり
@@ -70,7 +69,7 @@ class TapeOut:
 
     def feed(self, events: list[tuple[int, int]], cycle: int, mode: int) -> array | None:
         """1フレームぶんの音の切り替え(サイクル, モード)と、いまのサイクルとモードを渡す。
-        CSAVEの音がひと続き終わったときだけ、その標本の列を返す"""
+        CSAVEの音がひと続き終わったときに、その標本の列を返す"""
         for c, v in events:
             if self.ev is None:
                 if v in OSC:
@@ -102,7 +101,7 @@ class TapeIn:
             raw = w.readframes(w.getnframes())
         vals = _samples(raw, width)[::ch]  # 2チャンネルなら左だけ
         peak = max((abs(v) for v in vals), default=0) or 1
-        hi, lo = peak * 0.15, -peak * 0.15  # ふらつきで細かく反転しないよう幅を持たせる
+        hi, lo = peak * 0.15, -peak * 0.15  # 雑音で細かく反転しないように幅を持たせる
         level = 0
         self.edges: list[float] = []  # 値が変わる時刻(再生を始めてからのサイクル)
         for i, v in enumerate(vals):
@@ -139,10 +138,10 @@ def _samples(raw: bytes, width: int) -> list[int]:
 
 
 # ---- エミュレータでCSAVEさせて録る ----
-def _type(m, text: str) -> None:
-    from .app import Typer  # pygameを読むので、使うときだけ
-
+def _type(m, text: str, mode: str | None = None) -> None:
     t = Typer(m)
+    if mode:
+        t.add_mode(mode)
     t.add_text(text)
     while t.busy:
         t.step()
@@ -151,12 +150,14 @@ def _type(m, text: str) -> None:
 
 def record(m, command: str) -> array:
     """RUNモードでcommand(CSAVEかCSAVE M)を打って実行し、出てきた音を返す"""
-    m.mode = "RUN"
+    mode_key = m.model.family == "1350"  # PC-1350はMODEキーでRUNにする
+    if not mode_key:
+        m.mode = "RUN"
     m.run(CLOCK // 5)
     m.sound_events.clear()
     c0 = m.cpu.cycles
     mode0 = m.pc_out >> 4
-    _type(m, command + "\n")
+    _type(m, command + "\n", "RUN" if mode_key else None)
     quiet = 0
     while quiet < 10:  # 音が止まって1秒たつまで(前置きの音は8秒続く)
         n = len(m.sound_events)
@@ -174,7 +175,7 @@ def record(m, command: str) -> array:
 
 # ---- プログラムのファイルからテープを作る ----
 def tape_name(name: str) -> str:
-    """CSAVEに付ける名前。英字と数字だけで7字まで"""
+    """CSAVEに付ける名前(英字と数字だけで7字まで)"""
     out = "".join(ch for ch in name.upper() if ch.isascii() and ch.isalnum())[:7]
     return out or "PROG"
 
@@ -195,14 +196,9 @@ def merge_ranges(blocks: list[tuple[int, bytes]]) -> list[tuple[int, int]]:
 
 
 def program_wavs(prog, model: str, out_dir: str) -> list[tuple[str, str]]:
-    """プログラム(programs.Program)をエミュレータに読み込み、ROMにCSAVE・CSAVE Mさせて
-    wavにする。(ファイル, 実機で打つ読み込みの命令)の列を返す。BASICが先、ダンプが後"""
-    import os
-
-    from .app import Typer
-    from .machine import PC1251
-
-    m = PC1251(model=model)
+    """プログラム(programs.Program)を読み込み、ROMにCSAVE・CSAVE Mさせてwavにする。
+    (ファイル, 実機で打つ読み込みの命令)の列を返す。BASICが先、ダンプが後"""
+    m = new_machine(model)
     m.run(CLOCK)
     name = tape_name(prog.name)
     if prog.basic:
@@ -214,7 +210,7 @@ def program_wavs(prog, model: str, out_dir: str) -> list[tuple[str, str]]:
         while t.busy:
             t.step()
             m.run(CLOCK // 200)
-    for addr, data in prog.blocks + prog.after:  # BASICを打ったあとで書く(打ち込みで消えないように)
+    for addr, data in prog.blocks + prog.after:  # 打ち込みで消えないよう、BASICのあとで書く
         for i, b in enumerate(data):
             m.write(addr + i, b)
     ranges = merge_ranges(prog.blocks + prog.after)

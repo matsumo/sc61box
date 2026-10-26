@@ -1,50 +1,72 @@
 """プログラムの置き場所(ライブラリ)とファイルの読み方
 
-置き場所のディレクトリにファイルを置くと、F6の一覧に出てくる。置き場所の直下に
-置いたものはどの機種でも使え、pc1251/、pc1245/のフォルダに置いたものはその機種用になる。
+置き場所のディレクトリにファイルを置くと、プログラムの一覧に出る。
+
+- 1つの機種だけで動くものは、その機種のフォルダ(pc1251/、pc1245/、pc1261/、pc1350/)に
+  置く。RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)では、元の機種のフォルダ
+  (pc1251/、pc1261/)のものも、書き込む番地がRAMに収まれば使える。
+- いくつかの機種で動くものは直下に置き、「# model: 1251,1245」のように機種を書く。
+- どの機種でも動くBASICは、直下に「# model:」なしで置く。直下で「# model:」のないものは、
+  書き込む番地から動く機種を決める(Program.inferred)。
 
     programs/
         primes.bas         どの機種でも
+        pcint.bas          # model: 1251,1245
         pc1251/break.bas   PC-1251用
         pc1245/break.bas   PC-1245用(同じ名前でもかまわない)
 
     *.bas  BASICのプログラム(テキスト)。PROモードでNEWしてから打ち込む
-    *.hex  16進ダンプ。「番地 データ」の行で、RAMにそのまま書き込む
-           (記事のダンプと同じ形。行末の「:チェックサム」は読み飛ばす。
-           「;」から後ろはコメントなので、ニーモニックを書き添えておける。
-           YASM61860が出す「c000 : 12 34 … : 5a」の形も読める)
+    *.hex  16進ダンプ。「番地 データ」の行をRAMにそのまま書く。行末の「:チェックサム」は
+           読み飛ばし、「;」から後ろはコメント。YASM61860の「c000 : 12 34 … : 5a」も読める
 
-同じ名前の.basと.hexがあれば1本のプログラムとしてまとめ、ダンプを書いて
-からBASICを打ち込む。マシン語とそれを呼ぶBASICを組にしておける。
+同じ名前の.basと.hexは1本のプログラムにまとめ、ダンプを書いてからBASICを打ち込む。
 
-ファイルの中の「#」で始まる行はコメントで、次の書き方で指示を書ける。
+「#」で始まる行はコメントで、次の指示を書ける。
 
     # title: 表示する名前
-    # run: CALL &C300     実行するときにRUNモードで打つ文字列(既定はRUN)
-    # hex: pcint.hex      先に書き込む16進ダンプ(同じ場所か置き場所から探す)
-    # bin: code.bin &C300 先に書き込むマシン語のバイナリのファイル名と、置く番地。
-                          .binのファイルにはバイトが並んでいるだけで、置く番地は
-                          書かれていないので、# bin:の行で指定する
-                          (PocketToolsのbin2wavで使う.binと同じもの。YASM61860の-rは
-                          番地0からの中身を書き出すので、YASMはダンプ(-d)を.hexにする)
-    # after: code.hex     実行するときに打つ文字列を打ったあとで書き込むダンプ。
-                          BASICの側でDIMなどをしてからマシン語を読み込む記事のため。
-                          「# after: code.bin &C300」のように.binも使える
-    # model: 1251         動く機種(いくつもあるときは「,」で区切る)。書かなければ
-                          置いたフォルダで決まる(直下ならどの機種でも)。ほかの機種では
-                          一覧に「(PC-1251用)」と出て、読み込まない
-
-# hex: を使えば、1つのダンプ(たとえばPC-インタープリタ)を、
-その上で動くいくつものBASICのプログラムから使える。
+    # run: CALL &C300     実行するときにRUNモードで打つ文字列(既定はRUN)。いくつも書くと
+                          上から順に打つ
+    # mode: PRO           # run:の文字列をPROモードで打つ
+    # help: 0で始まる     読み込んで動かし始めたときに画面の下に出す説明。いくつも書くと
+                          行を重ねて出す
+    # setup: EQU#43       NEWのあと、BASICの前にPROモードで打つ命令。あるときは、ダンプも
+                          この命令のあとで書く(BASICの置き場所を動かしてマシン語を置く記事用)
+    # hex: pcint.hex      先に書き込む16進ダンプ。1つのダンプをいくつものプログラムから使える
+    # bin: code.bin &C300 先に書き込むマシン語のバイナリと置く番地(.binは番地を持たない。
+                          PocketToolsのbin2wavの.binと同じ)
+    # after: code.hex     実行の文字列を打ったあとで書き込むダンプ(BASICでDIMなどをしてから
+                          マシン語を置く記事用)。「# after: code.bin &C300」も使える
+    # data: C100-C17F     命令ではなくデータの範囲(逆アセンブルでDBの行にする)。「,」で区切って
+                          いくつも書ける。終わりを書かずに「C100」とすると、そこからデータ
+                          (次の指定か、実行した命令の手前まで)
+    # model: 1251,1245    動く機種(「,」で区切る)。書かなければ置いたフォルダで決まる。
+                          ほかの機種では一覧に出ず、開いても読み込まない
 """
 
 import os
 import re
 from dataclasses import dataclass, field
 
+from .i18n import tr
+from .keytype import stored_len
 from .machine import MODELS
 
 EXTS = (".bas", ".hex")
+
+
+# RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)は、元の機種(PC-1251、PC-1261)用の
+# ものも、書き込む番地がRAMに収まれば使える
+FAMILY = {name: m.base for name, m in MODELS.items() if m.base}
+
+# BASICのPOKEの番地(&のついた16進か、10進の数で書いたもの)
+POKE_RE = re.compile(r"POKE\s*(&[0-9A-F]{1,4}|[0-9]{1,5})\b")
+
+
+def fits(model: str, addrs: list[tuple[int, int]]) -> bool:
+    """番地の範囲(始め, 終わりの次)がどれも、その機種のRAMか液晶のRAMに収まるか"""
+    m = MODELS[model]
+    areas = [m.ram, *m.lcd]
+    return all(any(lo <= a and b <= hi for lo, hi in areas) for a, b in addrs)
 
 
 def model_dir(model: str) -> str:
@@ -78,10 +100,14 @@ def library_dirs() -> list[str]:
 
 
 def user_dir() -> str:
-    """ユーザーがファイルを置くところ(なければ作る)"""
+    """ユーザーがファイルを置くところ(なければ作る)。作れなくても(同じ名前のファイルがある
+    など)ここでは止まらずに場所を返す。そこへ書くところで失敗し、それぞれが知らせる"""
     env = [d for d in os.environ.get("PC1251_PROGRAMS", "").split(os.pathsep) if d]
     d = os.path.abspath(env[0]) if env else os.path.expanduser("~/.pc1251/programs")
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass
     return d
 
 
@@ -90,26 +116,89 @@ class Program:
     name: str  # 拡張子を除いたファイル名
     paths: list[str] = field(default_factory=list)
     title: str = ""
-    run: str = ""
+    run: str = ""  # 実行するときに打つ文字列。# run:がいくつもあれば改行でつなぐ
+    mode: str = ""  # # run:を打つモード。空ならRUN
+    setup: str = ""  # NEWのあとに打つ命令。いくつもあれば改行でつなぐ
+    help: str = ""  # 読み込んだあとに出す説明。いくつもあれば改行でつなぐ
+    norom: str = ""  # ROMなしで読み込んだときに出す説明(# norom:)。いくつもあれば改行でつなぐ
     basic: str = ""  # 打ち込むBASICの行(コメントを除いたもの)
     blocks: list[tuple[int, bytes]] = field(default_factory=list)
     after: list[tuple[int, bytes]] = field(default_factory=list)  # # after: で、実行のあとに書く
     model: str = ""  # # model: の値。空ならどの機種でも
-    bin_links: list[str] = field(default_factory=list)  # 「bin: code.bin &C300」など(書き出し用)
+    links: list[str] = field(
+        default_factory=list
+    )  # 「after: code.hex」など、ダンプの指示(書き出し用)
+    # # data: の範囲(始め, 終わりの次)。終わりを書いていなければ(始め, None)
+    data: list[tuple[int, int | None]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
-    def models(self) -> list[str]:
-        return [m.strip() for m in self.model.replace(" ", ",").split(",") if m.strip()]
+    def norom_ok(self) -> bool:
+        """ROMなしで使えるか。マシン語のダンプがあり、# norom: offでないもの"""
+        return bool(self.blocks or self.after) and self.norom.strip().lower() != "off"
+
+    @property
+    def models(self) -> list[str] | None:
+        """動く機種。# model:やフォルダで決まっていなければ、番地から決める(inferred)。
+        Noneはどの機種でも"""
+        named = [m.strip() for m in self.model.replace(" ", ",").split(",") if m.strip()]
+        return named or self.inferred
+
+    @property
+    def addresses(self) -> list[tuple[int, int]]:
+        """書き込むダンプと、BASICのPOKEの番地の範囲(始め, 終わりの次)"""
+        out = [(a, a + len(b)) for a, b in self.blocks + self.after if b]
+        for m in POKE_RE.finditer(self.basic):
+            t = m.group(1)
+            a = int(t[1:], 16) if t.startswith("&") else int(t)
+            out.append((a, a + 1))
+        return out
+
+    @property
+    def inferred(self) -> list[str] | None:
+        """番地がRAMか液晶に収まる機種。番地がなければNone(どの機種でも)、収まる機種が
+        なければ空。RAMの範囲だけが違う機種は元の機種に含める(runs_onがFAMILYで見る)"""
+        addrs = self.addresses
+        if not addrs:
+            return None
+        ok = [name for name in MODELS if fits(name, addrs)]
+        return [name for name in ok if FAMILY.get(name) not in ok]
 
     def runs_on(self, model: str) -> bool:
-        return not self.models or model in self.models
+        models = self.models
+        if models is None or model in models:
+            return True
+        return FAMILY.get(model) in models and self._fits_family(model)
+
+    def fits(self, writable) -> bool:
+        """機種を書いていないものが、いまの本体に書けるか。writable(番地)はMachine.writable。
+        PC-1350のRAMカードのように、機種の既定のRAMの外でも書ける番地を見るため"""
+        addrs = self.addresses
+        if self.model or not addrs:
+            return False
+        return all(writable(a) for lo, hi in addrs for a in range(lo, hi))
+
+    def _fits_family(self, model: str) -> bool:
+        """元の機種用のものを、RAMの範囲が違う機種で使えるか。書き込む番地がRAMに収まり、
+        BASICの置き場所が元の機種と違うときは、BASICが置かれる範囲(見積もり)にかからないこと
+        (# setup:でBASICの置き場所を動かすものは見ない)"""
+        addrs = self.addresses
+        if not fits(model, addrs):
+            return False
+        start = MODELS[model].prog_start
+        if self.setup or start == MODELS[FAMILY[model]].prog_start:
+            return True
+        end = start + 2 + sum(stored_len(ln) + 3 for ln in self.basic.splitlines() if ln.strip())
+        return all(b <= start or a >= end for a, b in addrs)
 
     def label(self, model: str) -> str:
         """一覧に出す名前。この機種で動かないものには、動く機種を添える"""
         if self.runs_on(model):
             return self.title
-        return self.title + "(" + "・".join(f"PC-{m}" for m in self.models) + "用)"
+        if not self.models:
+            return tr("{title}(番地がどの機種のRAMにも収まらない)", title=self.title)
+        models = tr("・").join(f"PC-{m}" for m in self.models)
+        return tr("{title}({models}用)", title=self.title, models=models)
 
     @property
     def kinds(self) -> str:
@@ -133,13 +222,44 @@ def _directive(line: str) -> tuple[str, str] | None:
         return None
     key, val = body.split(":", 1)
     key = key.strip().lower()
-    if key in ("title", "run", "hex", "bin", "after", "model"):
+    if key in (
+        "title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom", "data",
+    ):  # fmt: skip
         return key, val.strip()
     return None
 
 
-# YASM61860の16進ダンプの行。「c000 : 12 34 … : 5a」。行の番地は8の倍数に切り下げてあり、
-# 書き始めが行の途中のときは、そこまでを1バイトにつき3文字の空白で埋めている
+DATA_RE = re.compile(r"&?([0-9A-Fa-f]{1,4})(?:\s*[-〜]\s*&?([0-9A-Fa-f]{1,4}))?")
+
+
+def parse_data(text: str) -> tuple[list[tuple[int, int | None]], str]:
+    """# data: の値(「C100-C17F, C200」)を読む。範囲は(始め, 終わりの次)、終わりのない
+    番地は(番地, None)。読めない所があれば、その文字も返す(なければ空)"""
+    spans: list[tuple[int, int | None]] = []
+    for item in text.replace("、", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        hit = DATA_RE.fullmatch(item)
+        if hit is None:
+            return spans, item
+        lo = int(hit[1], 16)
+        hi = int(hit[2], 16) + 1 if hit[2] else None
+        if hi is not None and hi <= lo:
+            return spans, item
+        spans.append((lo, hi))
+    return spans, ""
+
+
+def data_line(spans: list[tuple[int, int]]) -> str:
+    """データの範囲(始め, 終わりの次)を# data: の行にする(なければ空)"""
+    if not spans:
+        return ""
+    return "# data: " + ", ".join(f"{lo:04X}-{hi - 1:04X}" for lo, hi in spans) + "\n"
+
+
+# YASM61860の16進ダンプの行(「c000 : 12 34 … : 5a」)。行の番地は8の倍数に切り下げてあり、
+# 行の途中から始まるときは、手前を1バイトにつき3文字の空白で埋めている
 YASM_LINE = re.compile(r"([0-9A-Fa-f]{4}) : (.*)")
 
 
@@ -148,7 +268,7 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
     blocks: list[tuple[int, bytes]] = []
     errors: list[str] = []
     for n, raw in enumerate(text.splitlines(), 1):
-        line = raw.split(";", 1)[0].strip()  # 「;」から後ろは行の途中でもコメント
+        line = raw.split(";", 1)[0].strip()
         if not line or line.startswith("#"):
             continue
         yasm = YASM_LINE.fullmatch(line)
@@ -167,7 +287,16 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
                     addr += pad // 3
             data = bytes.fromhex(body.split(":")[0].replace(" ", ""))
         except ValueError:
-            errors.append(f"{where}{n}行目を16進ダンプとして読めない: {line[:30]}")
+            errors.append(
+                tr("{where}{line}行目を16進ダンプとして読めない: {text}",
+                   where=where, line=n, text=line[:30])
+            )  # fmt: skip
+            continue
+        if addr + len(data) > 0x10000:
+            errors.append(
+                tr("{where}{line}行目の番地がFFFFを越える: {text}",
+                   where=where, line=n, text=line[:30])
+            )  # fmt: skip
             continue
         blocks.append((addr, data))
     return blocks, errors
@@ -192,22 +321,26 @@ def read_bin(path: str, addr: int, where: str = "") -> tuple[list[tuple[int, byt
     except OSError as e:
         return [], [f"{where}{e}"]
     if not data:
-        return [], [f"{where}中身が空"]
+        return [], [tr("{where}中身が空", where=where)]
     if addr + len(data) > 0x10000:
-        return [], [f"{where}&{addr:04X}から{len(data)}バイトでは、&FFFFを越える"]
+        why = tr("{where}&{addr:04X}から{n}バイトでは、&FFFFを越える",
+                 where=where, addr=addr, n=len(data))  # fmt: skip
+        return [], [why]
     return [(addr, data)], []
 
 
 def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
-    """# hex:・# bin:・# after:で指定したダンプを探して書き込む分に足す。同じフォルダ、
-    置き場所の同じ機種のフォルダ、置き場所の直下の順に探す。.binは後ろに番地を書く"""
+    """# hex:・# bin:・# after:のダンプを読んで足す。同じフォルダ、置き場所の同じ機種の
+    フォルダ、置き場所の直下の順に探す"""
     name, addr = spec, None
     parts = spec.rsplit(None, 1)
     if len(parts) == 2 and parse_addr(parts[1]) is not None:
         name, addr = parts[0], parse_addr(parts[1])
     is_bin = name.lower().endswith(".bin")
     if is_bin and addr is None:
-        prog.errors.append(f"# {key}: {name}に置く番地がない(例:# bin: {name} &C300)")
+        prog.errors.append(
+            tr("# {key}: {name}に置く番地がない(例:# bin: {name} &C300)", key=key, name=name)
+        )
         return
     sub = model_dir(folder_model(os.path.join(near, name)) or "-")
     places = [near] + [os.path.join(d, sub) for d in library_dirs()] + library_dirs()
@@ -216,16 +349,36 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
         if os.path.exists(p):
             if p not in prog.paths:
                 prog.paths.append(p)
+                prog.links.append(f"{key}: {name}" + ("" if addr is None else f" &{addr:04X}"))
                 if is_bin:
                     assert addr is not None
                     blocks, errors = read_bin(p, addr, name + " ")
-                    prog.bin_links.append(f"{key}: {name} &{addr:04X}")
                 else:
-                    blocks, errors = parse_hex(open(p, encoding="utf-8").read(), name + " ")
+                    try:
+                        text = open(p, encoding="utf-8").read()
+                    except (OSError, UnicodeDecodeError) as e:
+                        prog.errors.append(
+                            tr("# {key}: {name}を読めない({error})", key=key, name=name, error=e)
+                        )
+                        return
+                    blocks, errors = parse_hex(text, name + " ")
+                    # 使うダンプに書いた# data: の範囲も取り込む(ほかの指示は使う側で書く)
+                    for line in text.splitlines():
+                        d = _directive(line.strip()) if line.strip().startswith("#") else None
+                        if d and d[0] == "data":
+                            _add_data(prog, d[1], name)
                 (prog.after if key == "after" else prog.blocks).extend(blocks)
                 prog.errors.extend(errors)
             return
-    prog.errors.append(f"# {key}: {name}が見つからない")
+    prog.errors.append(tr("# {key}: {name}が見つからない", key=key, name=name))
+
+
+def _add_data(prog: Program, value: str, file: str) -> None:
+    """# data: の値を読んでprog.dataに足す。読めなければprog.errorsに足す"""
+    spans, bad = parse_data(value)
+    prog.data.extend(spans)
+    if bad:
+        prog.errors.append(tr("{file}: # data: の{text}が読めない", file=file, text=bad))
 
 
 def _read_into(prog: Program, path: str) -> None:
@@ -240,6 +393,11 @@ def _read_into(prog: Program, path: str) -> None:
             d = _directive(line.strip())
             if d and d[0] in ("hex", "bin", "after"):
                 _add_hex(prog, d[1], os.path.dirname(path), d[0])
+            elif d and d[0] == "data":
+                _add_data(prog, d[1], os.path.basename(path))
+            elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:
+                old = getattr(prog, d[0])
+                setattr(prog, d[0], old + "\n" + d[1] if old else d[1])
             elif d and not getattr(prog, d[0]):
                 setattr(prog, d[0], d[1])
     if path.lower().endswith(".hex"):
@@ -261,6 +419,8 @@ def load_program(path: str) -> Program:
         paths = [path]
     for p in paths:
         prog.paths.append(p)
+        if p.lower().endswith(".hex"):
+            prog.links.append(f"hex: {os.path.basename(p)}")
         _read_into(prog, p)
     prog.title = prog.title or prog.name
     prog.model = prog.model or folder_model(paths[0])
@@ -268,8 +428,8 @@ def load_program(path: str) -> Program:
 
 
 def scan(dirs: list[str] | None = None) -> list[Program]:
-    """置き場所(直下と機種用のフォルダ)にあるプログラムの一覧。同じフォルダの
-    同じ名前が複数の置き場所にあれば、先の置き場所が勝つ"""
+    """置き場所(直下と機種のフォルダ)にあるプログラム。同じフォルダの同じ名前が
+    いくつかの置き場所にあれば、先の置き場所のものを使う"""
     seen: dict[tuple[str, str], str] = {}
     for d in dirs if dirs is not None else library_dirs():
         for sub in [""] + [model_dir(m) for m in MODELS]:
@@ -283,19 +443,24 @@ def scan(dirs: list[str] | None = None) -> list[Program]:
                 if ext.lower() in EXTS and not f.startswith(".") and key not in seen:
                     seen[key] = os.path.join(d, sub, f)
     progs = [load_program(p) for _, p in sorted(seen.items())]
-    # ほかのプログラムが# hex:・# after:で使うだけのダンプ(.hexだけのもの)は、一覧に出さない
+    # ほかのプログラムが# hex:・# after:で使うだけのダンプは出さない(同じ名前の.basがあれば出す)
     used = {os.path.realpath(x) for p in progs for x in p.paths[1:] if x.lower().endswith(".hex")}
-    return [p for p in progs if p.basic or os.path.realpath(p.paths[0]) not in used]
+
+    def shown(p: Program) -> bool:
+        has_bas = any(x.lower().endswith(".bas") for x in p.paths)
+        return bool(p.basic) or has_bas or os.path.realpath(p.paths[0]) not in used
+
+    return [p for p in progs if shown(p)]
 
 
 def find(name: str, model: str = "") -> Program | None:
-    """パスか、置き場所にあるプログラムの名前から探す。modelのフォルダ、直下、
-    ほかの機種のフォルダの順に見る(ほかの機種用は、見つかっても読み込む側で断る)"""
+    """パスか、置き場所にあるプログラムの名前から探す。modelのフォルダ、元の機種のフォルダ、
+    直下、ほかの機種のフォルダの順に見る"""
     if os.path.exists(name):
         return load_program(name)
     stem = os.path.splitext(os.path.basename(name))[0]
-    others = [model_dir(m) for m in MODELS if m != model]
-    subs = ([model_dir(model)] if model else []) + [""] + others
+    own = [model_dir(m) for m in (model, FAMILY.get(model)) if m]
+    subs = own + [""] + [model_dir(m) for m in MODELS if model_dir(m) not in own]
     for sub in subs:
         for d in library_dirs():
             for ext in EXTS:
@@ -305,8 +470,11 @@ def find(name: str, model: str = "") -> Program | None:
     return None
 
 
-def for_model(items: list[Program], model: str) -> list[Program]:
-    """一覧に出すもの。この機種で動かないものは、同じ名前(title)でこの機種用が
-    あれば外す(ブロック崩しのPC-1251用とPC-1245用など)"""
-    here = {p.title for p in items if p.runs_on(model)}
-    return [p for p in items if p.runs_on(model) or p.title not in here]
+def for_model(items: list[Program], model: str, writable=None) -> list[Program]:
+    """一覧に出すもの(この機種で動くもの)。同じ# title:のものがこの機種のフォルダにあれば、
+    そちらだけを出す(機種ごとに作り分けたものを同じ名前で置ける)。writable(番地)があれば、
+    いまの本体(RAMカードなど)に書けるものも出す(Program.fits)"""
+    own_dirs = (model, FAMILY.get(model))
+    ok = [p for p in items if p.runs_on(model) or (writable and p.fits(writable))]
+    own = {p.title for p in ok if folder_model(p.paths[0]) in own_dirs}
+    return [p for p in ok if folder_model(p.paths[0]) in own_dirs or p.title not in own]

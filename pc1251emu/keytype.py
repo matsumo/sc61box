@@ -1,18 +1,23 @@
-"""文字列をPC-1251(とPC-1245)のキー操作に直す(貼り付けと自動入力用)"""
+"""文字列を各機種のキー操作に直す(貼り付けと自動入力用)"""
 
-# 指数のE。テキストでは「[E]」か「€」と書く(PocketToolsと同じ)。打つときは1字にまとめる
+import unicodedata
+
+# 指数のE。テキストでは「[E]」か「€」と書く(PocketToolsと同じ)。打つときは1字にまとめる。
+# 小文字のeは指数にしない(PC-1261などでは英小文字を打てるので、英字のeと区別できない)
 EXP = "€"
 EXP_SPELLINGS = ("[E]", "[e]")
 
 
 def normalize(text: str) -> str:
-    """指数のEの書き方を、打つための1字にそろえる"""
+    """指数のEの書き方を、打つための1字にそろえる。ポケコンにはバックスラッシュがなく、
+    同じ場所(ASCIIの5Ch)の字が¥なので、「\\」は¥にする(英語配列のキーボードや、
+    ¥キーで「\\」が入る設定でも¥が打てるように)"""
     for s in EXP_SPELLINGS:
         text = text.replace(s, EXP)
-    return text
+    return text.replace("\\", "¥")
 
 
-# SHIFTを押してから打つ記号。MAMEのキー名(下段がSHIFTのときの文字)による。
+# SHIFTを押してから打つ記号(MAMEのキー名による)
 SHIFTED = {
     ">": "-",
     "<": "*",
@@ -32,15 +37,72 @@ SHIFTED = {
     ":": "I",
     "√": ".",
     "π": "0",
+    "¥": "6",  # PC-1251・PC-1245では文字コード17h
     EXP: "+",  # 指数のE(Expキー、中間コード4Bh)。英字のEとは別の字
 }
 # PC-1245は括弧が1と2の上にある(↓↑ではない)
 SHIFTED_1245 = {**SHIFTED, "(": "1", ")": "2"}
+# PC-1260/1261/1262も括弧は1と2の上で、¥は6の上。Expのキーはなく、指数は英字のEで書く
+SHIFTED_1261 = {k: v for k, v in SHIFTED_1245.items() if k != EXP} | {"¥": "6"}
+MODELS_1261 = ("1260", "1261", "1262")
+
+# PC-1261などのカナ。カナの入力(SHIFT+8)で、キーだけで打つ字と、SHIFTを押してから打つ字
+# (「・」の印のあるキーでは小さい字)
+_KANA_PLAIN = dict(
+    zip("ｱｲｳｴｵｶｸｺｼｾﾀﾂﾃﾅﾇﾉﾋﾍﾏﾑﾓﾔﾕﾖﾗﾙﾛﾝ｡｣､ｰ", "QWERTYUIOPASDFGHJKL=ZXCVBNM.+*/-", strict=True)
+)
+_KANA_SHIFT = dict(
+    zip("ｧｨｩｪｫｷｹｻｽｿﾁｯﾄﾆﾈﾊﾌﾎﾐﾒｬｭｮﾘﾚﾜｦﾟ｢･ﾞ", "QWERTYUIOPASDFGHJKL=XCVBNM.+*/-", strict=True)
+)
+KANA_1261: dict[str, list[list[str]]] = {ch: [[k]] for ch, k in _KANA_PLAIN.items()}
+for _ch, _k in _KANA_SHIFT.items():
+    KANA_1261[_ch] = [["SHIFT"], [_k]]
+
+
+# PC-1350。数字の側に括弧と記号のキーがあり、SHIFTで入る記号はQ〜Pの上と数字の側。
+# カナはカナキーで切り替える
+SHIFTED_1350 = dict(zip('!"#$%&?π√@<>¥^', "QWERTYUIOP()*-", strict=True)) | {"\\": "*"}
+PLAIN_1350 = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/=.,;:()")
+_KANA_PLAIN_1350 = dict(
+    zip("ｱｲｳｴｵｶｸｺｼｾﾀﾂﾃﾅﾇﾉﾋﾍﾏﾑﾓﾔﾕﾖﾗﾙﾛﾝ｡｣､ｰ", "QWERTYUIOPASDFGHJKL=ZXCVBNM+-;:,", strict=True)
+)
+_KANA_SHIFT_1350 = dict(
+    zip("ｧｨｩｪｫｷｹｻｽｿﾁｯﾄﾆﾈﾊﾌﾎﾐﾒｬｭｮﾘﾚﾜｦﾟ｢･ﾞ", "QWERTYUIOPASDFGHJKL=XCVBNM+-;:,", strict=True)
+)
+KANA_1350: dict[str, list[list[str]]] = {ch: [[k]] for ch, k in _KANA_PLAIN_1350.items()}
+for _ch, _k in _KANA_SHIFT_1350.items():
+    KANA_1350[_ch] = [["SHIFT"], [_k]]
+
+
+def _half_kana(text: str) -> str:
+    """全角のカタカナとひらがな、濁点・半濁点のついた字を、半角カナの並びにする"""
+    out = []
+    for ch in text:
+        if "ぁ" <= ch <= "ゖ":
+            ch = chr(ord(ch) + 0x60)  # ひらがなをカタカナに
+        for c in unicodedata.normalize("NFD", ch):
+            if c == "\u3099":
+                out.append("ﾞ")
+            elif c == "\u309a":
+                out.append("ﾟ")
+            else:
+                out.append(_FULL_TO_HALF.get(c, c))
+    return "".join(out)
+
+
+_FULL_TO_HALF = {
+    unicodedata.normalize("NFKC", bytes([c]).decode("cp932")): bytes([c]).decode("cp932")
+    for c in range(0xA1, 0xE0)
+}
 PLAIN = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/=.")
 
 
 def keys_for(text: str, model: str = "1251") -> list[list[str]]:
-    """1文字ごとに押すキーの列。[["SHIFT"], ["I"]]のように、1打鍵ずつ並べる。"""
+    """押すキーの列。[["SHIFT"], ["I"]]のように1打鍵ずつ並べる"""
+    if model in MODELS_1261:
+        return _keys_for_1261(normalize(text).replace(EXP, "E"))
+    if model == "1350":
+        return _keys_for_1350(normalize(text).replace(EXP, "E"))
     shifted = SHIFTED_1245 if model == "1245" else SHIFTED
     out: list[list[str]] = []
     for ch in normalize(text):
@@ -55,13 +117,138 @@ def keys_for(text: str, model: str = "1251") -> list[list[str]]:
         elif ch in shifted:
             out.append(["SHIFT"])
             out.append([shifted[ch]])
-        # それ以外の文字はPC-1251のキーにないので捨てる
     return out
 
 
-# 1行に打てるのは79字まで(行番号と空白も数える)。長い行は途中まで打ってENTERし、
-# ▶を80回押して行末へ送ってから続きを打つ。直すときの入力欄も80字ぶんで、入った部分は
-# 中間コード(命令は1字)で数えるので、2回目からはその長さを見積もって残りに収まるだけ打つ。
+def typed_text(text: str, model: str = "1251") -> str:
+    """打ち込んだときにROMへ届く字の並び(keys_forが打てる字だけを、打つ形で残す)"""
+    if model in MODELS_1261:
+        return typed_text_1261(text)
+    if model == "1350":
+        return typed_text_1350(text)
+    shifted = SHIFTED_1245 if model == "1245" else SHIFTED
+    out = []
+    for ch in normalize(text):
+        if ch.isascii():
+            ch = ch.upper()
+        if ch in PLAIN or ch in shifted or ch in " \n":
+            out.append(ch)
+    return "".join(out)
+
+
+def typed_text_1261(text: str) -> str:
+    """PC-1261などで打ち込んだときにROMへ届く字の並び(_keys_for_1261が打つ字)"""
+    out = []
+    for ch in _half_kana(normalize(text).replace(EXP, "E")):
+        if ch.isascii():
+            ch = ch.upper()
+        if ch in KANA_1261 or ch in PLAIN or ch in SHIFTED_1261 or ch in " \n":
+            out.append(ch)
+    return "".join(out)
+
+
+def typed_text_1350(text: str) -> str:
+    """PC-1350で打ち込んだときにROMへ届く字の並び(_keys_for_1350が打つ字)"""
+    out = []
+    quoted = False
+    for ch in _half_kana(normalize(text).replace(EXP, "E")):
+        if ch == "\n":
+            quoted = False
+        elif ch == '"':
+            quoted = not quoted
+        if ch.isascii() and ch.isalpha():
+            out.append(ch if quoted and ch.islower() else ch.upper())
+        elif ch == "\\":
+            out.append("¥")
+        elif ch in KANA_1350 or ch in PLAIN_1350 or ch in SHIFTED_1350 or ch in " \n":
+            out.append(ch)
+    return "".join(out)
+
+
+def _keys_for_1261(text: str) -> list[list[str]]:
+    """PC-1261などのキー操作。カナはカナの入力に切り替えて打ち、終わったら戻す。
+    数字と空白とENTERはどちらの入力でも同じなので、切り替えずに打つ"""
+    out: list[list[str]] = []
+    kana = False
+    for ch in _half_kana(text):
+        if ch in KANA_1261:
+            if not kana:
+                out += [["SHIFT"], ["8"]]
+                kana = True
+            out += KANA_1261[ch]
+            continue
+        if ch.isascii():
+            ch = ch.upper()
+        if kana and ch not in "0123456789 \n":
+            out += [["SHIFT"], ["8"]]
+            kana = False
+        if ch == "\n":
+            out.append(["ENTER"])
+        elif ch == " ":
+            out.append(["SPC"])
+        elif ch in PLAIN:
+            out.append([ch])
+        elif ch in SHIFTED_1261:
+            out += [["SHIFT"], [SHIFTED_1261[ch]]]
+    if kana:
+        out += [["SHIFT"], ["8"]]
+    return out
+
+
+def _keys_for_1350(text: str) -> list[list[str]]:
+    """PC-1350のキー操作。カナはカナキー、小文字はSHIFT+カナキー(SML)で入力を切り替えて
+    打ち、終わったら戻す。小文字は「"」で囲んだ文字列の中だけで、ほかは大文字にする
+    (命令は大文字でないと通らない)"""
+    out: list[list[str]] = []
+    state = ""  # ""、"KANA"(カナ)、"SML"(小文字)
+    quoted = False
+
+    def switch(to: str) -> None:
+        nonlocal state
+        if state == to:
+            return
+        for s in (state, to):  # いったん英大文字の入力に戻してから切り替える
+            if s == "KANA":
+                out.append(["KANA"])
+            elif s == "SML":
+                out.extend([["SHIFT"], ["KANA"]])
+        state = to
+
+    for ch in _half_kana(text):
+        if ch in KANA_1350:
+            switch("KANA")
+            out += KANA_1350[ch]
+            continue
+        if ch.isascii() and ch.isalpha():
+            if quoted and ch.islower():
+                switch("SML")
+                out.append([ch.upper()])
+                continue
+            ch = ch.upper()
+            switch("")
+        elif ch not in "0123456789 \n()/*.+-=,;:":
+            switch("")  # SHIFTで入る記号は、カナの入力ではカナになる
+        if ch == '"':
+            quoted = not quoted
+        if ch == "\n":
+            quoted = False
+            out.append(["ENTER"])
+        elif ch == " ":
+            out.append(["SPC"])
+        elif ch in PLAIN_1350:
+            if state == "KANA" and ch in "+-,;:":  # カナの入力ではカナになるキー
+                switch("")
+            out.append([ch])
+        elif ch in SHIFTED_1350:
+            out.append(["SHIFT"])
+            out.append([SHIFTED_1350[ch]])
+    switch("")
+    return out
+
+
+# 1行に打てるのは行番号と空白を含めて79字まで。長い行は途中まで打ってENTERし、▶を80回
+# 押して行末へ送ってから続きを打つ。入った部分は中間コード(命令は1字)で数えるので、
+# 2回目からはその長さを見積もって、残りに収まるだけ打つ。
 LINE_MAX = 79
 
 # BASICの命令と関数の綴り(PC-1251のBASIC ROMの表から)。中間コードでは1字になる
@@ -102,11 +289,16 @@ def stored_len(text: str) -> int:
 
 def _cuts(line: str) -> tuple[list[int], list[int]]:
     """切ってよい位置。1つ目は文字列の外の「:」のすぐ後ろ、2つ目はそれ以外に
-    切ってもよい位置(文字列の外の空白・「;」・「,」のすぐ後ろ)"""
+    切ってもよい位置(文字列の外の空白・「;」・「,」のすぐ後ろ)。行番号のすぐ後ろでは
+    切らない(行番号だけを打つと行が消える)"""
+    head = len(line) - len(line.lstrip("0123456789"))
+    head = len(line) - len(line[head:].lstrip(" "))
     good, other, quoted = [], [], False
     for i, ch in enumerate(line):
         if ch == '"':
             quoted = not quoted
+        elif i < head:
+            continue
         elif not quoted and ch == ":":
             good.append(i + 1)
         elif not quoted and ch in " ;,":
@@ -138,14 +330,12 @@ def split_line(line: str) -> list[str]:
 
 
 # ---- 後ろに足すだけでは入らない行 ----
-# 行を呼び出して直すときの欄も、行番号の桁と中身で79字まで。中身は、入っている部分は
-# 中間コード(命令は1字)で、打ったばかりの部分は打った字で数え、あふれた分は行末から
-# 捨てられる。行全体が上限ぎりぎりで後ろのほうに命令があると、命令の綴りを打った
-# 時点であふれる。そこで実機で打つときと同じく、打つと縮む命令の綴りを先に前から
-# 打ち、縮まない字(変数・数・記号・文字列)をあとから途中に挿入する。
-#
-# 呼び出した直後(▶を1回)はカーソルが中身の先頭にあり、▶1回で1字(命令も1字)進む。
-# SHIFT+▶(INS)は1回で1字あけ、続けて打った字がそこに入る。
+# 行を直す欄では、入っている部分は中間コードで、打ったばかりの部分は打った字で数え、
+# 79字を超えた分は行末から捨てられる。上限に近い行の後ろのほうに命令があると、綴りを
+# 打った時点であふれるので、実機で打つときと同じく、打つと縮む命令の綴りを先に打ち、
+# 縮まない字(変数・数・記号・文字列)をあとから途中に挿入する。
+# 行を呼び出した直後(▶を1回)はカーソルが中身の先頭にあり、▶1回で1字(命令も1字)進む。
+# SHIFT+▶(INS)は1回で1字あける。
 
 
 def _units(body: str) -> list[str]:
@@ -256,14 +446,49 @@ def _append_fits(line: str, parts: list[str]) -> bool:
     return True
 
 
+def too_long(text: str, model: str = "1251") -> str | None:
+    """keys_for_programで打ち込むと欠ける最初の行。どの行も欠けずに入ればNone。
+    S1系はカナを2字に数え、カナを含めて79字を超える行は入らないとみる"""
+    s1 = model in MODELS_1261 or model == "1350"
+    for line in normalize(text).split("\n"):
+        if not line.strip():
+            continue
+        if s1:
+            typed = typed_text(line, model)
+            kana = sum(1 for ch in typed if "\uff61" <= ch <= "\uff9f")
+            if kana and len(typed) + kana > LINE_MAX:
+                return line
+        if not _append_fits(line, split_line(line)) and insert_plan(line) is None:
+            return line
+    return None
+
+
+def typeable(text: str, model: str = "1251") -> bool:
+    """keys_for_programで打ち込むと、どの行も欠けずに入るか"""
+    return too_long(text, model) is None
+
+
+def _upper_outside_quotes(line: str) -> str:
+    """「"」で囲んだ文字列の外の英字だけを大文字にする"""
+    out, quoted = [], False
+    for ch in line:
+        if ch == '"':
+            quoted = not quoted
+        out.append(ch if quoted or not ch.isascii() else ch.upper())
+    return "".join(out)
+
+
 def keys_for_program(text: str, model: str = "1251") -> list[list[str]]:
     """BASICのプログラムを打ち込む打鍵。長い行は分けて、2つ目からは打ったばかりの
-    行を直す形で後ろに足す。それではあふれる行は、命令を先に打ってから残りを挿入する"""
+    行を直す形で後ろに足す。後ろに足すとあふれる行は、命令を先に打ってから残りを挿入する"""
     out: list[list[str]] = []
     for line in normalize(text).split("\n"):
         if not line.strip():
             continue
-        line = "".join(ch.upper() if ch.isascii() else ch for ch in line)
+        if model == "1350":  # 文字列の中の小文字はそのまま打つ(_keys_for_1350)
+            line = _upper_outside_quotes(line)
+        else:
+            line = "".join(ch.upper() if ch.isascii() else ch for ch in line)
         parts = split_line(line)
         plan = None if _append_fits(line, parts) else insert_plan(line)
         if plan is None:
@@ -280,6 +505,9 @@ def keys_for_program(text: str, model: str = "1251") -> list[list[str]]:
                 continue
             # ▶1回で呼び出し(カーソルは中身の先頭)、pos回進めて、字数だけINSであけて打つ
             out.extend([["RIGHT"]] * (1 + pos))
-            out.extend([["SHIFT"], ["RIGHT"]] * len(piece))
+            if model == "1350":  # PC-1350にはINSキーがある
+                out.extend([["INS"]] * len(piece))
+            else:
+                out.extend([["SHIFT"], ["RIGHT"]] * len(piece))
             out.extend(keys_for(piece + "\n", model))
     return out

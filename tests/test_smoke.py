@@ -2,24 +2,16 @@
 
 import os
 import re
-import sys
-import types
 
-os.environ["SDL_VIDEODRIVER"] = "dummy"
-os.environ["SDL_AUDIODRIVER"] = "dummy"
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pygame
+from helpers import make_app, settle
 
-import pygame  # noqa: E402
-
-from pc1251emu.app import App  # noqa: E402
-from pc1251emu.lcdtext import lcd_text  # noqa: E402
+from pc1251emu.lcdtext import lcd_text
+from pc1251emu.overlay import ProgramMenu
 
 
 def test_app_types_and_computes():
-    args = types.SimpleNamespace(
-        scale=1.0, type=None, load=None, fresh=True, mute=True, persist=1.0
-    )
-    app = App(args)
+    app = make_app(frames=0)
     app.typer.add_text("12*3\n")
     for _ in range(90):
         app.frame()
@@ -56,8 +48,8 @@ def test_switch_knob_matches_label():
 
 
 def test_shortcuts_and_popup():
-    """Fキーを使わずに、⌘/Ctrlの組み合わせと右クリックのメニューで操作できる"""
-    app = _app()
+    """Fキーを使わずに、⌘/Ctrlの組み合わせと、操作欄のメニュー、右クリックで操作できる"""
+    app = make_app()
     m = app.m
     ev = pygame.event.Event
 
@@ -79,31 +71,37 @@ def test_shortcuts_and_popup():
     assert app.menu is not None
     key(pygame.K_ESCAPE, 0)
     assert app.menu is None
-    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=(300, 200)))
     app.frame()
-    assert app.popup is not None
-    labels = [t for t, _k, _a in app.popup_items()]
-    i, rect = next((i, r) for i, r in app.popup["rows"] if labels[i] == "スイッチ PRO")
+    labels = [b[0] for b in app.bar.buttons]
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=app.bar.rects[labels.index("本体")].center))
+    app.frame()
+    assert app.popup is not None and app.popup.kind == "machine"
+    labels = [it[0] for it in app.popup_items()]
+    i, rect = next((i, r) for i, r in app.popup.rows if labels[i] == "スイッチ PRO")
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
     assert app.popup is None and m.mode == "PRO"
     # メニューからプログラムを選んで読み込み、実行する
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=(300, 100)))
     app.frame()
-    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=app.popup["rows"][0][1].center))
+    assert app.popup.kind == "context"  # 右クリックは、よく使う操作だけ
+    labels = [it[0] for it in app.popup_items()]
+    rect = next(r for i, r in app.popup.rows if labels[i] == "プログラムの一覧…")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
     assert app.popup is None and app.menu is not None  # プログラムの一覧が開く
     app.frame()
-    titles = [p.title for p in app.menu["items"]]
+    titles = [p.title for p in app.menu.items]
     assert "文字のアニメーション(WAITの例)" in titles
     # 見えている行のうち、選んでいない、この機種で動くもの(置き場所の中身で並びが変わる)
-    items = app.menu["items"]
+    items = app.menu.items
     i, rect = next(
-        (i, r)
-        for i, r in app._menu_rows
-        if i != app.menu["sel"] and items[i].runs_on(app.m.model.name)
+        (i, r) for i, r in app.menu.rows if i != app.menu.sel and items[i].runs_on(app.m.model.name)
     )
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))  # 選ぶ
-    assert app.menu is not None and app.menu["sel"] == i and not app.typer.busy
-    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))  # もう一度で実行
+    assert app.menu is not None and app.menu.sel == i and not app.typer.busy
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))  # もう一度押しても選ぶだけ
+    assert app.menu is not None and not app.typer.busy
+    run = next(r for act, r in app.menu.button_rects if act == "run")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=run.center))  # 「読み込んで実行」
     assert app.menu is None and app.typer.busy
     assert app.typer.queue or app.typer.cur  # RUNまで打つ
     app.close()
@@ -113,25 +111,25 @@ def test_menu_scrolls():
     """入りきらない一覧は、ホイールとPageDownで動き、選んでいる行は見える範囲に残る"""
     from pc1251emu import programs
 
-    app = _app()
+    app = make_app()
     items = programs.scan() * 3
-    rows = app.MENU_ROWS
+    rows = ProgramMenu.ROWS
     assert len(items) > rows
-    app.menu = {"items": items, "sel": 0, "top": 0}
+    app.menu = ProgramMenu(items)
     app.frame()
     app.handle(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-2, flipped=False))
-    assert app.menu["top"] == 2 and app.menu["sel"] == 2
+    assert app.menu.top == 2 and app.menu.sel == 2
     app.frame()
-    assert app._menu_rows[0][0] == 2
-    app.handle(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-100, flipped=False))
-    assert app.menu["top"] == len(items) - rows
-    app.handle(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=100, flipped=False))
-    assert app.menu["top"] == 0 and app.menu["sel"] == rows - 1  # 見える範囲の下端に残る
-    app.menu["sel"] = 0
+    assert app.menu.rows[0][0] == 2
+    app.handle(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1000, flipped=False))
+    assert app.menu.top == len(items) - rows
+    app.handle(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=1000, flipped=False))
+    assert app.menu.top == 0 and app.menu.sel == rows - 1  # 見える範囲の下端に残る
+    app.menu.sel = 0
     app.handle(
         pygame.event.Event(pygame.KEYDOWN, key=pygame.K_PAGEDOWN, mod=0, unicode="", scancode=0)
     )
-    assert app.menu["sel"] == rows and app.menu["top"] == 1
+    assert app.menu.sel == rows and app.menu.top == 1
     app.frame()
     app.close()
 
@@ -140,7 +138,7 @@ def test_run_list_keys():
     """一覧はEnterで読み込んで実行し、Shift+Enterでは読み込むだけ。Rで読み直せる"""
     from pc1251emu import basictext
 
-    app = _app()
+    app = make_app()
     ev = pygame.event.Event
 
     def key(k, mod=0):
@@ -150,7 +148,7 @@ def test_run_list_keys():
     key(pygame.K_r)
     assert app.menu is not None
     app.frame()
-    app.menu["sel"] = next(i for i, p in enumerate(app.menu["items"]) if p.name == "primes")
+    app.menu.sel = next(i for i, p in enumerate(app.menu.items) if p.name == "primes")
     key(pygame.K_RETURN)
     assert app.menu is None
     while app.typer.busy:
@@ -162,11 +160,11 @@ def test_run_list_keys():
     assert any(t[:1].isdigit() for t in shown), shown  # 素数を出している
     # Shift+Enterは読み込むだけ(プログラムは入るが、動かさない)
     app.typer.add_text("NEW\n")
-    _settle(app)
+    settle(app)
     app.open_menu()
-    app.menu["sel"] = next(i for i, p in enumerate(app.menu["items"]) if p.name == "primes")
+    app.menu.sel = next(i for i, p in enumerate(app.menu.items) if p.name == "primes")
     key(pygame.K_RETURN, pygame.KMOD_SHIFT)
-    _settle(app)
+    settle(app)
     shown = set()
     for _ in range(120):
         app.frame()
@@ -174,25 +172,6 @@ def test_run_list_keys():
     assert basictext.program_lines(app.m.mem)
     assert not any(t[:1].isdigit() for t in shown), shown  # 動いていない
     app.close()
-
-
-def _app(model="1251"):
-    args = types.SimpleNamespace(
-        scale=1.0, type=None, load=None, fresh=True, mute=True, persist=1.0, model=model
-    )
-    app = App(args)
-    for _ in range(40):
-        app.frame()
-    return app
-
-
-def _settle(app, limit=3000):
-    for _ in range(limit):
-        app.frame()
-        if not app.typer.busy:
-            break
-    for _ in range(10):
-        app.frame()
 
 
 def test_open_basic_and_hex_pair(tmp_path=None):
@@ -209,12 +188,12 @@ def test_open_basic_and_hex_pair(tmp_path=None):
         f.write('# run: RUN\n10 A=6*7\n20 PRINT "X";A\n')
     prog = programs.load_program(os.path.join(d, "pair.bas"))
     assert prog.title == "組の試験" and prog.kinds == "BASIC+HEX" and prog.size == 4
-    app = _app()
+    app = make_app()
     app.typer.add_text("10 PRINT 1\n")  # 前のプログラムはNEWで消える
-    _settle(app)
+    settle(app)
     app.open_program(prog, run=True)
     assert bytes(app.m.mem[0xC300:0xC304]) == bytes([1, 2, 3, 4])
-    _settle(app)
+    settle(app)
     app.m.run(CLOCK)
     assert lcd_text(app.m).strip().startswith("X"), lcd_text(app.m)
     assert "42" in lcd_text(app.m)
@@ -229,21 +208,16 @@ def test_samples_load():
     here = os.path.join(os.path.dirname(__file__), "..", "programs")
     items = programs.scan([here])
     assert {p.name for p in items} >= {"anime", "primes", "mogura"}
-    app = _app()
+    app = make_app()
     for prog in items:
         assert not prog.errors, prog.errors
         if not prog.runs_on("1251"):  # PC-1245用は読み込まないので、LISTでは確かめられない
             continue
         app.open_program(prog)
-        _settle(app)
-        app.m.brk = True  # 読み込むと動き出す見本(anime)を止めてからLISTする
-        for _ in range(10):
-            app.frame()
-        app.m.brk = False
-        _settle(app)
+        settle(app)
         app.typer.add_mode("PRO")
         app.typer.add_text("LIST\n")
-        _settle(app)
+        settle(app)
         first = prog.basic.split("\n")[0]
         assert lcd_text(app.m).replace("?", " ").split()[0] == first.split()[0], (
             prog.name,
@@ -260,7 +234,7 @@ def test_mogura_on_pc_interpreter():
     prog = programs.find("mogura")
     assert prog is not None
     assert prog.size == 976 and not prog.errors
-    app = _app()
+    app = make_app()
     m = app.m
     app.open_program(prog, run=True)
     for _ in range(3000):
@@ -281,7 +255,7 @@ def test_display_stays_on_while_computing():
     """見本noise.bas: CALLで表示をオンにすると、計算中も表示が消えず、棒が伸びる"""
     from pc1251emu import programs
 
-    app = _app()
+    app = make_app()
     m = app.m
     prog = programs.find("noise")
     assert prog is not None
@@ -307,7 +281,7 @@ BALL2 = 0xBF84  # break.asmの2個目の玉
 def _play_breakout(level: str, height: int, model: str = "1251") -> None:
     from pc1251emu import programs
 
-    app = _app(model)
+    app = make_app(model)
     m = app.m
     r = m.cpu.ram
     prog = programs.find("break", model)
@@ -355,8 +329,8 @@ def _play_breakout(level: str, height: int, model: str = "1251") -> None:
     for _ in range(30 * 8):  # パドルを玉の段に合わせ続ける
         app.frame()
         bx, wall = r[0x10], r[0x16]
-        # パドルと壁のあいだに見えるのは玉の1点だけ。ただし画面を書き直している途中で
-        # フレームが切れると、前の位置と新しい位置の2点がすぐ近くに見えることがある
+        # パドルと壁のあいだに見えるのは玉の1点だけ(書き直しの途中では、前の位置と
+        # 新しい位置の2点が近くに見えることがある)
         lit = [x for x in range(2, wall - 1) for _ in range(bin(column(x)).count("1"))]
         dots = len(lit)
         if model == "1251" and m.mem[BALL2] != 0xFF:  # 点滅するブロックを壊して2個になった
@@ -426,8 +400,7 @@ def _break_label(model, name):
 
 
 def _to_play(m, model="1251"):
-    """遊んでいるあいだのフレームの頭(PLAY)まで進める。玉を入れ替えている途中で
-    内部RAMを書き換えないように、玉を置き直す前に呼ぶ"""
+    """フレームの頭(PLAY)まで進める。玉を置き直す前に呼ぶ"""
     play = _break_label(model, "PLAY")
     for _ in range(100_000):
         if m.cpu.pc == play:
@@ -437,7 +410,7 @@ def _to_play(m, model="1251"):
 
 
 def test_model_folders(tmp_path, monkeypatch):
-    """置き場所の直下はどの機種でも、pc1251/・pc1245/はその機種用。同じ名前でも別に並ぶ"""
+    """置き場所の直下はどの機種でも、pc1251/とpc1245/はその機種用。同じ名前でも別に並ぶ"""
     from pc1251emu import programs
 
     (tmp_path / "pc1245").mkdir()
@@ -469,6 +442,37 @@ def test_model_folders(tmp_path, monkeypatch):
     assert uses.blocks == [(0xC100, b"\x00")] and not uses.errors
 
 
+def test_shared_programs_at_top(tmp_path):
+    """直下に# model:で機種を並べたものは、その機種の一覧に出る。機種のフォルダに同じ名前の
+    ものがあれば、その機種ではフォルダのものだけが出る"""
+    from pc1251emu import programs
+
+    (tmp_path / "pc1261").mkdir()
+    (tmp_path / "game.bas").write_text(
+        "# title: GAME\n# model: 1251,1245,1261\n10 PRINT 0\n", encoding="utf-8"
+    )
+    (tmp_path / "pc1261" / "game.bas").write_text("# title: GAME\n10 PRINT 61\n", encoding="utf-8")
+    items = programs.scan([str(tmp_path)])
+    for model, text in (("1251", "0"), ("1245", "0"), ("1261", "61"), ("1262", "61")):
+        games = [p for p in programs.for_model(items, model) if p.title == "GAME"]
+        assert [p.basic for p in games] == [f"10 PRINT {text}\n"]
+    assert not [p for p in programs.for_model(items, "1350") if p.title == "GAME"]
+
+
+def test_bundled_programs_follow_layout():
+    """機種のフォルダの見本には# model:がなく、直下で番地を使う見本には機種が2つ以上ある"""
+    from pc1251emu import programs
+
+    here = os.path.join(os.path.dirname(__file__), "..", "programs")
+    for p in programs.scan([here]):
+        folder = programs.folder_model(p.paths[0])
+        named = [m for m in p.model.replace(" ", ",").split(",") if m]
+        if folder:
+            assert p.model == folder, p.paths[0]
+        elif p.addresses:
+            assert len(named) >= 2, p.paths[0]
+
+
 def test_helper_dumps_hidden(tmp_path):
     """# hex:や# after:で使われるだけのダンプは一覧に出さず、大きさは使う側に出る"""
     from pc1251emu import programs
@@ -486,8 +490,7 @@ def test_helper_dumps_hidden(tmp_path):
 
 
 def test_yasm_dump():
-    """YASM61860の16進ダンプ(dumpoutの出力)をそのまま.hexとして読める。
-    行の途中から始まる所は、番地を8の倍数に切り下げ、手前を1バイト3文字の空白で埋めている"""
+    """YASM61860の16進ダンプを.hexとして読める(行の途中から始まる所は空白で埋めてある)"""
     from pc1251emu import programs
 
     # ORG &C103に01〜0B、ORG &C200にAA BBを置いたときの出力
@@ -531,9 +534,9 @@ def test_bin_link(tmp_path):
     assert not over.blocks and any("&FFFFを越える" in e for e in over.errors)
 
     # 読み込んで動かすと、RAMに書かれる
-    app = _app("1251")
+    app = make_app("1251")
     app.open_program(game, run=False)
-    _settle(app)
+    settle(app)
     assert bytes(app.m.mem[0xC300:0xC303]) == bytes([0x12, 0x34, 0x56])
     # BASICを書き出すと、# bin:・# after:もそのまま残る
     path = export_program(app.m, str(tmp_path / "out"), game)
@@ -543,12 +546,11 @@ def test_bin_link(tmp_path):
 
 
 def test_ball_runs():
-    """弾むボールは、どちらの機種でもボールが文字の区切りをまたがずに液晶の全幅を
-    弾んで進み、BRKでBASICへ戻る"""
+    """弾むボールは、どちらの機種でも液晶の全幅を弾んで進み、BRKでBASICへ戻る"""
     from pc1251emu import programs
 
     for model, org in (("1251", 0xC000), ("1245", 0xC100)):
-        app = _app(model)
+        app = make_app(model)
         m = app.m
         prog = programs.find("ball", model)
         assert prog is not None
@@ -596,7 +598,7 @@ def test_scroll_runs():
         rows = _hex_rows(_hex_path(model, "scroll.hex"))
         waitf = next(a for a, note in rows if note.startswith("WAIT FA"))  # 写し終えて待つところ
         after = next(a for a, note in rows if a > waitf and note.startswith("TEST 08"))
-        app = _app(model)
+        app = make_app(model)
         m = app.m
         prog = programs.find("scroll", model)
         assert prog is not None
@@ -630,9 +632,9 @@ def test_scroll_runs():
 
 
 def test_breakout_every_row():
-    """どの段のブロックも壊せて、玉もその段に描かれる(表の引き方を間違えると上の段だけ壊れない)"""
+    """どの段のブロックも壊せて、玉もその段に描かれる"""
     for model in ("1251", "1245"):
-        app = _app(model)
+        app = make_app(model)
         m = app.m
         r = m.cpu.ram
         _start_breakout(app, model=model)
@@ -664,7 +666,7 @@ def test_breakout_every_row():
 
 def test_breakout_second_ball():
     """PC-1251版: 点滅するブロックを壊すと玉が2個になり、片方を落としても玉は減らない"""
-    app = _app()
+    app = make_app()
     m = app.m
     r = m.cpu.ram
     _start_breakout(app)
@@ -708,7 +710,7 @@ def test_breakout_second_ball():
 
 def test_grid_disappears_when_power_is_off():
     """消灯ドットの薄い格子は電源が入っているときだけ見え、OFFにすると消える"""
-    app = _app()
+    app = make_app()
     for _ in range(30):
         app.frame()
     assert app.m.power and app.panel.grid_level > 0.9
@@ -741,7 +743,7 @@ def test_export_basic_round_trip(tmp_path=None):
     from pc1251emu.app import export_program
 
     d = str(tmp_path or tempfile.mkdtemp())
-    app = _app()
+    app = make_app()
     m = app.m
     src = (
         '5 REM !"#$%&()*+,-./:;<=>?@^\n'
@@ -750,7 +752,7 @@ def test_export_basic_round_trip(tmp_path=None):
     )
     app.typer.add_mode("PRO")
     app.typer.add_text("NEW\n" + src)
-    _settle(app)
+    settle(app)
     before = basictext.program_lines(m.mem)
     assert [n for n, _ in before] == [5, 10, 999]
     prog = programs.find("break")
@@ -764,17 +766,17 @@ def test_export_basic_round_trip(tmp_path=None):
     assert again.blocks  # 組になっていたダンプも読まれる
     app.typer.add_mode("PRO")
     app.typer.add_text("NEW\n" + again.basic)
-    _settle(app)
+    settle(app)
     assert basictext.program_lines(m.mem) == before
     app.typer.add_text("NEW\n")
-    _settle(app)
+    settle(app)
     assert export_program(m, d) is None
     app.close()
 
 
 def test_fast_typing_is_not_dropped():
-    """パソコンのキーを速く打っても(1フレームで押して離す、前のキーを離す前に次を押す)取りこぼさない"""
-    app = _app()
+    """パソコンのキーを速く打っても(1フレームで押して離す、離す前に次を押す)取りこぼさない"""
+    app = make_app()
     app.set_mode("PRO")
     for _ in range(20):
         app.frame()
@@ -844,7 +846,7 @@ if __name__ == "__main__":
 
 def test_arrows_as_numpad():
     """⌘K(Ctrl+K)で矢印キーが数字キーの8・2・4・6になり、もう一度で戻る"""
-    app = _app()
+    app = make_app()
     ev = pygame.event.Event
     app.key_down(ev(pygame.KEYDOWN, key=pygame.K_k, mod=pygame.KMOD_CTRL))
     assert app.numpad_arrows
@@ -861,10 +863,10 @@ def test_arrows_as_numpad():
 
 
 def test_symbol_shadow_cleared():
-    """表示記号の影は記号が消えると残らない(影のはみ出す下の段も毎フレーム貼り直す)"""
+    """表示記号が消えると、その影も残らない"""
     from pc1251emu import display
 
-    app = _app()
+    app = make_app()
     p = app.panel
     x0, y0 = p.mat_x, p.ann_y
     box = pygame.Rect(x0, y0, p.mat_w, p.mat_y - 4 - y0)  # ドットの面の上まで
@@ -882,8 +884,8 @@ def test_symbol_shadow_cleared():
 
 
 def test_power_on_is_silent():
-    """スイッチを入れてもブザーは鳴らない(RESETが見えないので、ROMは検査用の道に入らない)"""
-    app = _app()
+    """スイッチを入れてもブザーは鳴らない"""
+    app = make_app()
     m = app.m
     stops = dict(app.sw_stops)
     app.set_switch_from(stops["OFF"])
@@ -903,7 +905,7 @@ def test_power_on_is_silent():
 def test_help_closes_on_input():
     """最初に出るキーの説明は、キーを押すかクリックすると消える。⌘/では出し入れできる"""
     ev = pygame.event.Event
-    app = _app()
+    app = make_app()
     app.help = 100
     app.handle(ev(pygame.KEYDOWN, key=pygame.K_a, mod=0, unicode="a", scancode=0))
     assert app.help == 0
@@ -917,14 +919,40 @@ def test_help_closes_on_input():
     app.close()
 
 
+class _Speaker:
+    """鳴らす出口の代わりに、渡された標本をためる(無音のフレームは空)"""
+
+    keep_silent = False
+
+    def __init__(self) -> None:
+        self.pcm: list[bytes] = []
+
+    def level(self) -> int:
+        from pc1251emu.audio import TARGET
+
+        return TARGET
+
+    def push(self, pcm: bytes) -> None:
+        self.pcm.append(pcm)
+
+    def clear(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _capture(app) -> list[bytes]:
+    app.speaker = _Speaker()
+    return app.speaker.pcm
+
+
 def test_power_on_pcm_is_quiet():
     """起動したときと、スイッチを切って入れ直したときに、作った音の標本がほぼ0のまま"""
     from array import array
 
-    app = _app()  # 起動の最初のフレームから録る
-    pcm = []
-    app.sound = object()
-    app.feed_sound = pcm.append  # pyrefly: ignore[bad-assignment]
+    app = make_app()  # 起動の最初のフレームから録る
+    pcm = _capture(app)
     stops = dict(app.sw_stops)
 
     def frames(n):
@@ -951,12 +979,10 @@ def test_sound_at_other_speeds():
     from pc1251emu.audio import RATE
 
     for speed in (2, 0.5):
-        app = _app()
+        app = make_app()
         app.typer.add_text("BEEP 3")
-        _settle(app, 200)
-        pcm = []
-        app.sound = object()
-        app.feed_sound = pcm.append  # pyrefly: ignore[bad-assignment]
+        settle(app, 200)
+        pcm = _capture(app)
         app.turbo = speed
         app.m.held.add("ENTER")
         for _ in range(4):
@@ -984,7 +1010,7 @@ def test_sound_at_other_speeds():
 
 
 def test_tape_round_trip(tmp_path):
-    """プログラムをROMのCSAVEでwavにし、別のエミュレータでCLOAD・CLOAD Mして元と同じになる"""
+    """ROMのCSAVEで作ったwavを、別の本体でCLOAD・CLOAD Mすると元と同じになる"""
     from pc1251emu import basictext, programs, tape
     from pc1251emu.machine import CLOCK, PC1251
 
@@ -1008,16 +1034,15 @@ def test_tape_round_trip(tmp_path):
 
 
 def test_csave_writes_wav(tmp_path, monkeypatch):
-    """画面でCSAVEすると、置き場所にwavができ、別のエミュレータでCLOADすると元に戻る。
-    BEEPの音はwavにしない"""
+    """画面でCSAVEすると置き場所にwavができ、別の本体でCLOADすると元に戻る。BEEPはwavにしない"""
     from pc1251emu import basictext, tape
     from pc1251emu.machine import CLOCK, PC1251
 
     monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
-    app = _app()
+    app = make_app()
     app.turbo = 8
     app.typer.add_text("BEEP 3\n")
-    _settle(app)
+    settle(app)
     for _ in range(120):
         app.frame()
     assert not list(tmp_path.glob("*.wav"))  # BEEPはテープの音ではない
@@ -1025,7 +1050,7 @@ def test_csave_writes_wav(tmp_path, monkeypatch):
     app.typer.add_text('NEW\n10 PRINT "HI"\n20 END\n')
     app.typer.add_mode("RUN")
     app.typer.add_text('CSAVE "HI"\n')
-    _settle(app)
+    settle(app)
     for _ in range(600):
         app.frame()
         if list(tmp_path.glob("tape-*.wav")):
@@ -1098,9 +1123,8 @@ def test_lcd_ram_mirrors():
 
 
 def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) -> tuple[int, int]:
-    """SoundQueueに、フレームごとに標本を積み、音の装置が512標本ずつ取っていく様子をまねる。
-    fpsは実際のフレームの速さ、clockは装置の時計の速さの比。音が切れた回数と、
-    フレームの音を捨てた回数を返す"""
+    """SoundQueueにフレームごとに標本を積み、装置が512標本ずつ取っていく様子をまねる。
+    clockは装置の時計の速さの比。(音が切れた回数, 積まずに捨てた回数)を返す"""
     import random
 
     from pc1251emu import audio
@@ -1139,8 +1163,8 @@ def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) 
 
 
 def test_sound_queue_keeps_up():
-    """フレームの速さが揺れたり、ときどき40ms遅れたり、音の装置の時計とずれたりしても、
-    待ち行列が尽きず、あふれもしない(以前のmixer.Channelのやり方では何十回も途切れた)"""
+    """フレームの速さが揺れても、ときどき40ms遅れても、装置の時計とずれても、待ち行列が
+    尽きず、あふれもしない"""
     for fps in (29.9, 30.0, 30.3):
         for clock in (0.995, 1.0, 1.005):
             gaps, dropped = _queue_run(fps, clock, jitter_ms=2)
@@ -1148,7 +1172,7 @@ def test_sound_queue_keeps_up():
 
 
 def test_recording_without_ffmpeg(tmp_path, monkeypatch):
-    """ffmpegが見つからない環境では、録画を始めずに知らせるだけで、エミュレータは止まらない"""
+    """ffmpegがなければ、録画を始めずに知らせるだけで、エミュレータは止まらない"""
     import imageio_ffmpeg
 
     from pc1251emu import recorder
@@ -1159,7 +1183,7 @@ def test_recording_without_ffmpeg(tmp_path, monkeypatch):
     monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
     monkeypatch.setattr(recorder.shutil, "which", lambda name: None)
     monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", missing)
-    app = _app("1251")
+    app = make_app("1251")
     app.toggle_recording()
     assert app.recorder is None
     assert "ffmpegが見つかりません" in app.status
@@ -1175,7 +1199,7 @@ def test_recording(tmp_path, monkeypatch):
     from pc1251emu import recorder
 
     monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
-    app = _app("1251")
+    app = make_app("1251")
     app.toggle_recording()
     assert app.recorder is not None
     for _ in range(45):
@@ -1194,3 +1218,64 @@ def test_recording(tmp_path, monkeypatch):
     h, mnt, sec = dur.split(":")
     assert abs(float(sec) - 45 / 30) < 0.15, dur
     assert not list(tmp_path.glob("*.tmp"))  # 途中のファイルは残らない
+
+
+def test_save_and_load_state(tmp_path):
+    """状態を保存して戻すと、保存したところから同じように動き続ける(どこでもセーブ)。
+    ほかの機種の状態は読み込まない"""
+    import pytest
+    from helpers import boot, finish
+
+    from pc1251emu.machine import CLOCK
+
+    path = str(tmp_path / "state.json")
+    for model, card in (("1251", 0), ("1261", 0), ("1350", 16)):
+        try:
+            m, t = boot(model, card)
+        except FileNotFoundError:
+            continue
+        prog = "10 A=A+1:PRINT A:GOTO 10\n"
+        t.add_mode("PRO")
+        t.add_program(prog)
+        t.add_mode("RUN")
+        t.add_text("RUN\n")
+        finish(m, t)
+        m.run(CLOCK // 3)
+        m.save_state(path)
+        m.run(CLOCK)
+        after = bytes(m.mem), bytes(m.cpu.ram), m.cpu.pc, m.cpu.cycles
+        m2, _ = boot(model, card)
+        m2.load_state(path)
+        m2.run(CLOCK)
+        assert (bytes(m2.mem), bytes(m2.cpu.ram), m2.cpu.pc, m2.cpu.cycles) == after, model
+    other, _ = boot("1245")
+    with pytest.raises(ValueError):
+        other.load_state(path)
+
+
+def test_state_shortcuts(tmp_path, monkeypatch):
+    """⇧⌘Sで状態を保存し、⇧⌘Lで戻す"""
+    from pc1251emu import app as app_module
+
+    monkeypatch.setattr(app_module, "STATE_DIR", str(tmp_path))
+    app = make_app()
+    app.state_file = str(tmp_path / "state.json")
+    ev = pygame.event.Event
+
+    def key(k):
+        mod = pygame.KMOD_CTRL | pygame.KMOD_SHIFT
+        app.handle(ev(pygame.KEYDOWN, key=k, mod=mod, unicode="", scancode=0))
+
+    app.typer.add_text("12*3\n")
+    settle(app)
+    key(pygame.K_s)
+    assert "保存しました" in app.status
+    app.typer.add_text("1+1\n")
+    settle(app)
+    assert "36" not in lcd_text(app.m)
+    key(pygame.K_l)
+    assert "戻しました" in app.status
+    for _ in range(5):
+        app.frame()
+    assert "36" in lcd_text(app.m)
+    app.close()
