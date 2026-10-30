@@ -6,9 +6,9 @@ import pygame
 import pytest
 from helpers import make_app
 
-from pc1251emu import app as appmod
-from pc1251emu import disasm, workbench
-from pc1251emu.machine import CLOCK, RomNotFound, new_machine
+from sc61box import app as appmod
+from sc61box import benchview, disasm, workbench
+from sc61box.machine import CLOCK, RomNotFound, new_machine
 
 VLINE = "C000 027F10F800523700 12"  # 本のダンプリストの縦線(第4章)
 ev = pygame.event.Event
@@ -211,7 +211,7 @@ def test_disasm():
 
 def test_dump_text_reloads():
     """書き出した.hexは、エミュレータの16進ダンプとして読み直せる"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     m, b = bench()
     type_line(b, "C000 027F10F800523700")
@@ -251,7 +251,7 @@ def test_app_without_rom(monkeypatch):
     monkeypatch.setattr(appmod, "new_machine", no_rom)
     app = make_app(scale=0.5, frames=3)
     assert app.bench is not None and app.m.norom
-    assert app.window.get_width() == app.body_size[0] + workbench.PANE_W
+    assert app.window.get_width() == app.body_size[0] + benchview.PANE_W
     _type(app, "C000 027F10F800523700\n")
     assert bytes(app.m.mem[0xC000:0xC008]) == bytes.fromhex("027F10F800523700")
     assert not app.m.held  # 本体のキーは押していない
@@ -276,7 +276,7 @@ def test_app_without_rom(monkeypatch):
 def test_app_open_hex_program(tmp_path, monkeypatch):
     """ROMなしでプログラムを読み込むと、マシン語だけを書き、呼び出し用のBASICの最後のCALLを
     開始番地にする"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     (tmp_path / "two.hex").write_text("C200 37\nC000 027F10F80052 37\n", encoding="utf-8")
     (tmp_path / "two.bas").write_text("10 CALL &C200:CALL &C000\n20 GOTO 20\n", encoding="utf-8")
@@ -293,12 +293,11 @@ def test_app_open_hex_program(tmp_path, monkeypatch):
 def test_norom_font_at_rom_addresses():
     """ROMなしの本体には、ROMと同じ番地と並びで、1から描いた文字の形を置く(本の見本の
     電光掲示板などがROMの表を読むため)"""
-    from pc1251emu import lcdtext, norom
+    from sc61box import norom
 
     m, _b = bench()
     assert bytes(m.mem[0x43C4 + 5 * 0x51 :][:5]) == norom.glyph("A") != bytes(5)
     assert bytes(m.mem[0x4414 + 5 * 0x17 :][:5]) == norom.glyph("¥")
-    assert lcdtext.glyphs(m.mem)["Z"] == norom.glyph("Z")  # プリンタの字の形にもなる
 
 
 def test_norom_routines():
@@ -334,7 +333,7 @@ def test_basic_hints():
 
 
 def test_norom_ok():
-    from pc1251emu import programs
+    from sc61box import programs
 
     hexed = programs.Program("a", blocks=[(0xC000, b"\x37")])
     assert hexed.norom_ok
@@ -352,7 +351,7 @@ BUNDLED = os.path.join(os.path.dirname(__file__), "..", "programs")
 )  # fmt: skip
 def test_bundled_programs_without_rom(model, name):
     """同梱の弾むボール、ブロック崩し、文字を流す見本は、ROMなしでも遊べて、BRKで戻る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     prog = programs.load_program(os.path.join(BUNDLED, name + ".bas"))
     assert prog.norom_ok
@@ -394,20 +393,48 @@ def test_moves_home_end_page():
     assert (b.row, b.col) == (0xC000, 0)
 
 
-def test_key_repeat_only_while_editing():
-    """作業欄に打っているあいだだけキーをリピートし、実行中は本体にキーをそのまま送る"""
+def test_key_repeat_only_while_editing(monkeypatch):
+    """作業欄に打っているあいだだけ、押し続けたカーソルのキーをリピートする。1フレームに
+    1回まで動かし、離せばすぐ止まる。実行中は本体にキーをそのまま送り、リピートしない"""
+    from sc61box import app as appmod
+
+    now = [100.0]
+    monkeypatch.setattr(appmod.time, "monotonic", lambda: now[0])
     app = make_app(scale=0.5, frames=2, norom=True)
-    assert app.bench is not None
-    assert pygame.key.get_repeat() == app.REPEAT
+    b = app.bench
+    assert pygame.key.get_repeat() == (0, 0)  # pygameのリピートは使わない
     _type(app, "C000 2D01")  # JR C000(自分へ)
+    b.go(0xC000)
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    assert b.row == 0xC008
+    now[0] += 0.3
+    app.frame()
+    assert b.row == 0xC008  # まだ始まらない
+    now[0] += 0.5  # フレームが遅れても、1フレームに1回だけ
+    app.frame()
+    assert b.row == 0xC010
+    now[0] += 0.06
+    app.frame()
+    assert b.row == 0xC018
+    app.handle(ev(pygame.KEYUP, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    now[0] += 1.0
+    app.frame()
+    assert b.row == 0xC018  # 離せばすぐ止まる
+    _type(app, "1")  # 16進表記の字はリピートしない
+    assert app.held_key is None
+    b.go(0xC000)
     _key(app, pygame.K_g, "g", pygame.KMOD_CTRL)
     app.frame()
-    assert app.bench.state == "run" and pygame.key.get_repeat() == (0, 0)
+    assert b.state == "run"
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
+    now[0] += 1.0
+    app.frame()
+    assert app.held_key is None and b.row == 0xC000  # 実行中は作業欄に届かない
+    app.handle(ev(pygame.KEYUP, key=pygame.K_DOWN, unicode="", mod=0, scancode=0))
     _key(app, pygame.K_PERIOD, ".", pygame.KMOD_CTRL)
     app.frame()
-    assert app.bench.state == "pause" and pygame.key.get_repeat() == app.REPEAT
     _key(app, pygame.K_UP, "", pygame.KMOD_CTRL)  # ⌘↑で開始番地へ
-    assert app.bench.row == 0xC000
+    assert b.row == 0xC000
     app.close()
 
 
@@ -451,9 +478,9 @@ JUMP_OVER_ZEROS = bytes.fromhex("79C020") + bytes(29) + bytes.fromhex("027F10F80
 def test_export_keeps_code_after_zeros(tmp_path, monkeypatch):
     """書き出しは、作業欄で書いた範囲を0のバイトも含めて保存する(0が続いても、その先の
     コードを落とさない)。離れた番地に書いたものは別の行のまとまりにする"""
-    from pc1251emu import programs
+    from sc61box import programs
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(scale=0.5, frames=2, norom=True)
     b = app.bench
     assert b is not None
@@ -472,7 +499,7 @@ def test_export_keeps_code_after_zeros(tmp_path, monkeypatch):
 
 def test_menu_paste_and_export_use_bench(tmp_path, monkeypatch):
     """ROMなしでは、メニューの貼り付けと書き出しも⌘V・⌘Eと同じく作業欄のダンプを扱う"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(scale=0.5, frames=2, norom=True)
     monkeypatch.setattr(app, "clipboard", lambda: "C000 027F10F8005237")
     actions = {it.label: it.action for it in app.popup_items("program") if it.action}
@@ -562,7 +589,7 @@ def test_restart_keeps_written_ranges(tmp_path, monkeypatch):
 def test_undo_loading_resumes_running_program(tmp_path):
     """実行中に別のプログラムを読み込んでから「読み込む前に戻す」と、そのときのPCで一時停止
     した状態に戻り、「続ける」で続きから動く"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     (tmp_path / "other.hex").write_text("C200 37\n", encoding="utf-8")
     app = make_app(scale=0.5, frames=2, norom=True)
@@ -586,9 +613,9 @@ def test_undo_loading_resumes_running_program(tmp_path):
 def test_export_keeps_start_address(tmp_path, monkeypatch):
     """書き出した.hexには開始番地を# run:で書き、読み直すと同じ番地から動く(開始番地より
     前にデータがあっても)"""
-    from pc1251emu import programs
+    from sc61box import programs
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(scale=0.5, frames=2, norom=True)
     b = app.bench
     assert b is not None
@@ -624,7 +651,7 @@ def test_step_over_rom_routine(routine):
 
 def test_rom_routine_advances_timer():
     """ROMのルーチンの代わりにかかったことにするサイクルも、タイマ(2ms・512ms)を進める"""
-    from pc1251emu.machine import TICK_2MS
+    from sc61box.machine import TICK_2MS
 
     m, b = bench()
     b.paste("C000 FF44FF44FF44FF4437")  # CAL 1F44を4回 / RTN
@@ -1083,4 +1110,61 @@ def test_paste_into_start_field(monkeypatch):
     _key(app, pygame.K_v, "v", pygame.KMOD_CTRL)
     assert (b.start, b.start_by, b.start_buf) == (0xC010, "user", None)
     assert bytes(app.m.mem[0xC000:0xC003]) == bytes.fromhex("020137")
+    app.close()
+
+
+def test_counter_reset_clears_timer_flags():
+    """OUTCでカウンタをリセットすると、立ったままのタイマの印も消える。リセットのあとTEST 01で
+    512msを待つプログラム(押し続けたキーの繰り返しまでの待ちなど)が、前に立った印で
+    すぐに抜けない"""
+    from sc61box.machine import TICK_2MS
+
+    m, _b = bench()
+    m.halted = True  # 時間だけ進める
+    m.run(TICK_2MS * 257)
+    assert m.test_bits() & 0x03 == 0x03  # 読まれないまま立っている
+    m.out_c(0x03)
+    assert m.test(0x03) == 0
+    m.halted = True
+    m.run(TICK_2MS * 255)
+    assert m.test(0x01) == 0  # 510msではまだ
+    m.halted = True
+    m.run(TICK_2MS)
+    assert m.test(0x01) == 0x01  # 512msで立つ
+
+
+def test_timer_counts_only_after_reset_in_a_run():
+    """まとめて動かす区切りの途中でカウンタをリセットしても、タイマはリセットのあとの
+    時間だけ進む(区切りの頭からの時間を足すと、リセットの直後に2msの印が立つ)"""
+    from sc61box.machine import TICK_2MS
+
+    m, b = bench()
+    # WAIT FFを並べて2msの8割ほど待ってから、Cポートに02を出してカウンタをリセットし、
+    # その場で回る(WAIT FFは6+255サイクル)
+    waits = TICK_2MS * 8 // 10 // 261
+    code = bytes.fromhex("4EFF" * waits + "0202125FDBDF2D01")
+    b.load_blocks([(0xC000, code)], 0xC000)
+    m.cpu.pc = 0xC000
+    m.t2 = m.t512cnt = 0
+    m.t2ms = m.t512 = 0
+    m.run(TICK_2MS)
+    assert m.cpu.pc == 0xC000 + len(code) - 2 and m.t2 < TICK_2MS // 2
+    assert m.test(0x02) == 0
+    m.run(TICK_2MS)
+    assert m.test(0x02) == 0x02
+
+
+def test_lcd_duty_from_real_writes():
+    """液晶RAMに書いた時刻から、点いていた時間の割合を求める。ほんの数サイクルだけ点いた
+    ドットは、そのフレームのあいだずっと点いていたようには出ない"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b = app.bench
+    # F800に7Fを書いてすぐ00に戻し、WAITで待って繰り返す
+    b.paste("C000 027F10F800520200524EFF4EFF2D0E")
+    app.bench_do("run")
+    for _ in range(3):
+        app.frame()
+    share = app.lcd_duty[0]
+    assert 0 < share[0] < 0.03 and share[7] == 0
+    assert app.panel.level[0][0] < 0.05
     app.close()

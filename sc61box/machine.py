@@ -28,10 +28,12 @@ import base64
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
+from . import paths
 from .i18n import tr
-from .printer import CHARS_1350, Printer
+from .printer import LEAD_1251, LEAD_1350, SWAP_1350, Printer
 from .sc61860 import SC61860, Bus
 
 CLOCK = 192_000  # 命令サイクルの周波数(水晶576kHzの1/3)
@@ -93,9 +95,6 @@ KEYS = {
     "ENTER": ("A", 5, 0x80),
     "0": ("A", 6, 0x80),
 }
-
-# モードスイッチ
-MODES = ("OFF", "RUN", "PRO", "RSV")
 
 # 液晶の表示記号: (番地, ビット)。PockEmulによる
 SYMBOLS = {
@@ -260,17 +259,22 @@ MODELS["1350"] = Model(
 )
 
 
+# RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)と、そのROMと絵を持つ元の機種
+BASE_MODEL = {name: m.base for name, m in MODELS.items() if m.base}
+
+
 class RomNotFound(FileNotFoundError):
     pass
 
 
 def find_rom(name: str) -> str:
-    """ROMファイルを探す。PC1251_ROM、./rom、エミュレータのrom/、~/.pc1251の順"""
+    """ROMファイルを探す。SC61BOX_ROM(前の名前のPC1251_ROMも)、./rom、エミュレータの
+    rom/、データのフォルダ(~/.sc61box)の順"""
     dirs = [
-        os.environ.get("PC1251_ROM", ""),
+        paths.env("ROM"),
         "rom",
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rom"),
-        os.path.expanduser("~/.pc1251"),
+        paths.data_dir(),
     ]
     for d in dirs:
         if d and os.path.exists(os.path.join(d, name)):
@@ -279,7 +283,7 @@ def find_rom(name: str) -> str:
     kb = rom_size(f"bas-{model}.rom") // 1024
     raise RomNotFound(
         tr("ROMのファイル{name}が見つかりません。実機から読み出した内部ROM(cpu-{model}.rom、"
-           "8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数PC1251_ROMに"
+           "8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数SC61BOX_ROMに"
            "置き場所を指定してください(READMEの「ROMの用意」)。", name=name, model=model, kb=kb)
     )  # fmt: skip
 
@@ -314,35 +318,31 @@ def new_machine(
         if not rom:
             raise ValueError(tr("PC-1350はROMなしでは動かせません"))
         return PC1350(model=model, card=card, overseas=overseas)
-    if not rom:
-        m = MODELS[model]
-        return PC1251(bytes(0x2000), bytes(m.bas_size), model=model)
-    return PC1251(model=model)
+    return PC1251(model=model, norom=not rom)
 
 
 class PC1251(Bus):
     """PC-1251、PC-1245、PC-1260/1261/1262の本体"""
+
+    card = 0  # RAMカードの大きさ(KB)。PC-1350だけが差せる
 
     def __init__(
         self,
         cpu_rom: bytes | None = None,
         bas_rom: bytes | None = None,
         model: str = "1251",
+        norom: bool = False,
     ):
         self.model = MODELS[model]
         if self.model.family == "1350" and type(self) is PC1251:
             raise ValueError("PC-1350はnew_machine()かPC1350で作る")
         self.mem = bytearray(0x10000)
-        cpu_name, bas_name = self.model.roms
-        # ROMを読まずに作ったか(ROMの番地がすべて0)
-        self.norom = not any(cpu_rom or b"\x01") and not any(bas_rom or b"\x01")
-        if cpu_rom is None:
-            cpu_rom = read_rom(cpu_name)
-        if bas_rom is None:
-            bas_rom = read_rom(bas_name)
-        self.mem[0:0x2000] = cpu_rom[:0x2000]
         ba, bs = self.model.bas_addr, self.model.bas_size
-        self.mem[ba : ba + bs] = bas_rom[:bs]
+        self.norom = norom  # ROMを読まずに作った(ROMの番地はすべて0)
+        if not norom:
+            cpu_name, bas_name = self.model.roms
+            self.mem[0:0x2000] = (cpu_rom or read_rom(cpu_name))[:0x2000]
+            self.mem[ba : ba + bs] = (bas_rom or read_rom(bas_name))[:bs]
         if self.model.lines == 2:
             # 何もつながっていない番地は、番地の上位バイトを返すとした(データバスに残る値)。
             # PEEK &7FFFが127になることで機種を見分けるプログラムがある
@@ -372,6 +372,9 @@ class PC1251(Bus):
         self.mode = "RUN"
         self.pa = self.pb = self.pc_out = self.pf = 0
         self.lcd_dirty = True
+        # 液晶RAMに書いた記録((サイクル, 番地, 前の値, 書いた値)の並び)。Noneなら記録しない
+        self.lcd_trace: list[tuple[int, int, int, int]] | None = None
+        self.reset_at: int | None = None  # 実行の区切りの中でカウンタをリセットしたサイクル
         self.power = True  # Cポートのビット3で切れる
         self.halted = False  # Cポートのビット2で止まっている
         self.printer: Printer | None = None  # つないだプリンタ
@@ -422,9 +425,11 @@ class PC1251(Bus):
         elif self._lcd_page[a >> 8]:
             a = self._lcd_page[a >> 8] << 8 | (a & 0xFF)
         if self.wmask[a]:
-            self.mem[a] = v
             if self._lcd_ram[a >> 8]:
                 self.lcd_dirty = True
+                if self.lcd_trace is not None and self.mem[a] != v:
+                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+            self.mem[a] = v
 
     def _scan(self, port: str, strobe: int) -> int:
         v = 0
@@ -461,8 +466,14 @@ class PC1251(Bus):
     def connect_printer(self, on: bool = True) -> None:
         """プリンタをつなぐ(onがFalseなら外す)。PC-1251・PC-1245のROMは、つながっているかを
         電源を入れたときに調べるので、つないだあとで電源を入れ直す"""
-        table = CHARS_1350 if self.model.family == "1350" else None
-        self.printer = Printer(table) if on else None
+        if not on:
+            self.printer = None
+        elif self.model.family == "1350":
+            self.printer = Printer(SWAP_1350, LEAD_1350)
+        elif self.model.lines == 2:  # PC-1261などは、行の頭に字でないコードを送らない
+            self.printer = Printer()
+        else:
+            self.printer = Printer(lead=LEAD_1251)
 
     def out_a(self, v: int) -> None:
         self.pa = v
@@ -481,9 +492,12 @@ class PC1251(Bus):
     def out_c(self, v: int) -> None:
         old = self.pc_out
         self.pc_out = v
-        if v & 0x02:  # カウンタのリセット
+        if v & 0x02:  # カウンタのリセット。立っているタイマの印も消す(リセットからTEST命令で
+            # 512msを待つプログラムが、前に立ったままの印で待たずに抜けないように)
             self.t2 = 0
             self.t512cnt = 0
+            self.t512 = self.t2ms = 0
+            self.reset_at = self.cpu.cycles
         if (v ^ old) & 0xF0:
             self.sound_events.append((self.cpu.cycles, v >> 4))
         if v & 0x08:  # 電源オフ
@@ -537,13 +551,16 @@ class PC1251(Bus):
             chunk = min(cycles, TICK_2MS - self.t2)
             if self.halted and (self.held or self.brk or self.reset_key):
                 self.halted = False
+            self.reset_at = None
             if self.halted:  # 止まっているあいだは時間だけ進める
                 used = chunk
                 cpu.cycles += used
             else:
                 used = cpu.run(chunk, guard, seen)
             cycles -= used
-            self._tick(used)
+            # 途中でカウンタをリセットしたときは、リセットのあとの時間だけタイマを進める
+            reset = self.reset_at
+            self._tick(used if reset is None else cpu.cycles - reset)
             if cpu.trapped:
                 return True
         return False
@@ -570,11 +587,12 @@ class PC1251(Bus):
     def display_on(self) -> bool:
         return self.power and bool(self.pc_out & 0x01)
 
-    def columns(self) -> list[int]:
+    def columns(self, mem: Sequence[int] | None = None) -> list[int]:
         """液晶の列(1バイトが縦の7ドット)を左から並べる。左の12桁はF800から順に、
         残りはF87Bから逆順。2行の液晶では1行目のあとに2行目が続き、各行の左の12桁は
-        2000(2行目は2040)から、右の12桁は2800(2840)から順に並ぶ"""
-        m = self.mem
+        2000(2行目は2040)から、右の12桁は2800(2840)から順に並ぶ。memを渡すと、
+        メモリの代わりにそこから読む(column_addrsが番地を求めるのに使う)"""
+        m = self.mem if mem is None else mem
         if self.model.lines == 2:
             out: list[int] = []
             for row in (0x00, 0x40):
@@ -584,6 +602,10 @@ class PC1251(Bus):
         n = self.model.cells * 5
         left = min(n, 60)
         return list(m[0xF800 : 0xF800 + left]) + [m[0xF87B - i] for i in range(n - left)]
+
+    def column_addrs(self) -> list[int]:
+        """columnsの各列が、液晶RAMのどの番地のバイトか"""
+        return self.columns(range(0x10000))
 
     # PC-1260/1261/1262のBASICがプログラムの先頭(FFの番地)を置くところ。先頭はEQU#で動かせる
     PROG_START_PTR = 0x6619
@@ -913,9 +935,11 @@ class PC1350(PC1251):
         if self.card == 8 and 0x2000 <= a < 0x4000:
             a += 0x2000
         if self.wmask[a]:
-            self.mem[a] = v
             if 0x7000 <= a < 0x7A00:
                 self.lcd_dirty = True
+                if self.lcd_trace is not None and self.mem[a] != v:
+                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+            self.mem[a] = v
 
     def in_a(self) -> int:
         """IAに出した値に、押されたキーのビットを重ねる。IAの2本の線のあいだのキーは、
@@ -953,9 +977,9 @@ class PC1350(PC1251):
         self.pf = v
 
     # ---- 液晶 ----
-    def columns(self) -> list[int]:
+    def columns(self, mem: Sequence[int] | None = None) -> list[int]:
         """上の段から順に、各段の左から150列ぶんの液晶RAM(1バイトが縦8ドット)"""
-        m = self.mem
+        m = self.mem if mem is None else mem
         out: list[int] = []
         for band in LCD_BANDS_1350:
             for blk in LCD_BLOCKS_1350:
