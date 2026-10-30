@@ -12,9 +12,6 @@ jobs:
           - os: windows-latest
             name: windows-x64
             binary: dist/sc61box.exe
-          - os: windows-11-arm
-            name: windows-arm64
-            binary: dist/sc61box.exe
           - os: macos-latest
             name: macos-arm64
             binary: dist/sc61box
