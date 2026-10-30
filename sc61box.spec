@@ -2,19 +2,19 @@
 """PyInstaller spec: PC-1251 エミュレータの単体実行バイナリ
 
 使用方法:
-    uv run pyinstaller pc1251.spec
+    uv run pyinstaller sc61box.spec
 
 出力:
-    dist/pc1251  (Windows では dist/pc1251.exe)
+    dist/sc61box  (Windows では dist/sc61box.exe)
 """
 
 a = Analysis(
-    ['tools/pc1251_entry.py'],
+    ['tools/sc61box_entry.py'],
     pathex=[],
     binaries=[],
     datas=[
         # 筐体・液晶の画像とキー配置データ
-        ('pc1251emu/assets', 'pc1251emu/assets'),
+        ('sc61box/assets', 'sc61box/assets'),
         # 付属の見本プログラム(.bas/.hex)
         ('programs', 'programs'),
     ],
@@ -34,7 +34,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='pc1251',
+    name='sc61box',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

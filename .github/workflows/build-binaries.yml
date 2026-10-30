@@ -11,13 +11,13 @@ jobs:
         include:
           - os: windows-latest
             name: windows-x64
-            binary: dist/pc1251.exe
+            binary: dist/sc61box.exe
           - os: macos-14
             name: macos-arm64
-            binary: dist/pc1251
+            binary: dist/sc61box
           - os: ubuntu-latest
             name: linux-amd64
-            binary: dist/pc1251
+            binary: dist/sc61box
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -29,7 +29,7 @@ jobs:
         run: uv sync --dev
 
       - name: Build executable with PyInstaller
-        run: uv run pyinstaller pc1251.spec --noconfirm
+        run: uv run pyinstaller sc61box.spec --noconfirm
 
       - name: Ensure executable bit
         if: runner.os != 'Windows'
@@ -38,5 +38,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pc1251-${{ matrix.name }}
+          name: sc61box-${{ matrix.name }}
           path: ${{ matrix.binary }}

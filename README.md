@@ -31,10 +31,10 @@ uv run sc61box     # 起動
 PyInstaller で 1 つの実行ファイルを作れます。
 
 ```sh
-uv run pyinstaller pc1251.spec
+uv run pyinstaller sc61box.spec
 ```
 
-`dist/pc1251` が生成されます。実行には ROM(`rom/` または環境変数 `PC1251_ROM`)が別途必要で、Python 環境は不要です。実行時にコンソールウィンドウは表示されません。
+`dist/sc61box` が生成されます。実行には ROM(`rom/` または環境変数 `PC1251_ROM`)が別途必要で、Python 環境は不要です。実行時にコンソールウィンドウは表示されません。
 
 ### ROMの用意
 
